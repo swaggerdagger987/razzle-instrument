@@ -22,7 +22,6 @@ DATA = ROOT / "data"
 DB_PATH = DATA / "razzle.db"
 HOST = "0.0.0.0"
 PORT = 8080
-LEAGUE_SEASON = 2025
 PBKDF2_ROUNDS = 200_000
 STATIC_EXT = {".html", ".css", ".js", ".json", ".md", ".txt"}
 CONTENT_TYPES = {
@@ -34,7 +33,12 @@ CONTENT_TYPES = {
     ".txt": "text/plain; charset=utf-8",
 }
 KEY_MISSING = "The key is not set."
+WAR_PREVIEW = (
+    "The War Room is in preview. League chat is not wired up yet — "
+    "the odds engine and formula builder come first."
+)
 ODDS_MISSING = "Championship odds are not computed yet."
+NFL_SKILL = frozenset({"QB", "RB", "WR", "TE"})
 MODEL_URL_DEFAULT = "https://api.openai.com/v1/chat/completions"
 MODEL_NAME_DEFAULT = "gpt-4o-mini"
 SYSTEM = (
@@ -82,8 +86,11 @@ CREATE TABLE IF NOT EXISTS war_messages (
 
 _DB_LOCK = threading.Lock()
 _PLAYERS_LOCK = threading.Lock()
-_PLAYERS = None
-_NFL = None
+_SLEEPER = None
+_CATALOG = None
+_NFL_PACKS = {}
+_NFL_GSIS = {}
+_COLLEGE_PACKS = {}
 
 
 class SleeperError(Exception):
@@ -181,12 +188,107 @@ def sleeper_json(path, timeout=20):
         raise SleeperError(0) from exc
 
 
-def load_player_names():
-    """Sleeper id -> full name. None if the player file did not load."""
-    global _PLAYERS
+def normalize_gsis(value):
+    return (value or "").strip()
+
+
+def load_catalog():
+    global _CATALOG
+    if _CATALOG is not None:
+        return _CATALOG
+    path = ROOT / "screener" / "data" / "catalog.json"
+    try:
+        _CATALOG = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        _CATALOG = {"nfl": {"seasons": [], "defaultSeason": None}, "college": {"seasons": []}}
+    return _CATALOG
+
+
+def nfl_catalog_years():
+    catalog = load_catalog()
+    seasons = catalog.get("nfl", {}).get("seasons") or []
+    return {int(row["year"]) for row in seasons if isinstance(row, dict) and "year" in row}
+
+
+def sleeper_league_season():
+    """NFL season Sleeper uses for league pulls and the in-season calendar."""
+    state = _safe_state()
+    if isinstance(state, dict) and state.get("season") is not None:
+        try:
+            return int(state["season"])
+        except (TypeError, ValueError):
+            pass
+    return datetime.now().year
+
+
+def nfl_stats_season():
+    """Season year for nflverse screener files tied to the current league season."""
+    want = sleeper_league_season()
+    if want in nfl_catalog_years():
+        return want, True
+    return want, False
+
+
+def load_nfl_pack(year):
+    year = int(year)
+    if year in _NFL_PACKS:
+        return _NFL_PACKS[year]
+    path = ROOT / "screener" / "data" / "nfl" / f"{year}.json"
+    if not path.is_file():
+        _NFL_PACKS[year] = None
+        return None
+    with path.open(encoding="utf-8") as handle:
+        pack = json.load(handle)
+    _NFL_PACKS[year] = pack
+    return pack
+
+
+def nfl_by_gsis(year):
+    year = int(year)
+    if year in _NFL_GSIS:
+        return _NFL_GSIS[year]
+    pack = load_nfl_pack(year)
+    index = {}
+    if isinstance(pack, dict):
+        for player in pack.get("players") or []:
+            gsis = normalize_gsis(player.get("gsisId"))
+            if gsis:
+                index[gsis] = player
+    _NFL_GSIS[year] = index
+    return index
+
+
+def load_college_pack(year):
+    year = int(year)
+    if year in _COLLEGE_PACKS:
+        return _COLLEGE_PACKS[year]
+    path = ROOT / "screener" / "data" / "college" / f"{year}.json"
+    if not path.is_file():
+        _COLLEGE_PACKS[year] = None
+        return None
+    with path.open(encoding="utf-8") as handle:
+        pack = json.load(handle)
+    _COLLEGE_PACKS[year] = pack
+    return pack
+
+
+def find_college_player(year, cid):
+    pack = load_college_pack(year)
+    if not pack or not cid:
+        return None
+    want = str(cid).strip()
+    for player in pack.get("players") or []:
+        if str(player.get("cid") or "") == want:
+            return player
+    return None
+
+
+def load_sleeper_index():
+    """Sleeper player id -> record. None if the player file did not load."""
+    global _SLEEPER
     with _PLAYERS_LOCK:
-        if _PLAYERS is not None:
-            return _PLAYERS
+        if _SLEEPER is not None:
+            return _SLEEPER
         path = DATA / "sleeper_players_nfl.json"
         data = None
         if path.exists():
@@ -204,7 +306,7 @@ def load_player_names():
                 data = json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
                 raise SleeperError(0) from exc
-        names = {}
+        index = {}
         if isinstance(data, dict):
             for pid, rec in data.items():
                 if not isinstance(rec, dict):
@@ -214,31 +316,46 @@ def load_player_names():
                     first = rec.get("first_name") or ""
                     last = rec.get("last_name") or ""
                     name = f"{first} {last}".strip()
+                if not name and rec.get("position") == "DEF":
+                    team = str(rec.get("team") or pid or "").strip()
+                    name = f"{team} Defense" if team else f"Defense {pid}"
                 if name:
-                    names[str(pid)] = str(name)
-        _PLAYERS = names
-        return names
+                    index[str(pid)] = {
+                        "name": str(name),
+                        "position": str(rec.get("position") or ""),
+                        "team": str(rec.get("team") or ""),
+                        "gsis_id": normalize_gsis(rec.get("gsis_id")),
+                    }
+        _SLEEPER = index
+        return index
 
 
-def nfl_2025():
-    global _NFL
-    if _NFL is None:
-        path = ROOT / "screener" / "data" / "nfl" / "2025.json"
-        with path.open(encoding="utf-8") as handle:
-            _NFL = json.load(handle)
-    return _NFL
+def load_player_names():
+    """Sleeper id -> display name. None if the player file did not load."""
+    index = load_sleeper_index()
+    if index is None:
+        return None
+    return {pid: rec["name"] for pid, rec in index.items()}
 
 
-def find_players(name):
+def sleeper_display_name(rec, pid):
+    if rec and rec.get("name"):
+        return rec["name"]
+    return f"id {pid}"
+
+
+def find_players_by_name(name, year):
     want = (name or "").strip().casefold()
     if not want:
-        return []
-    pack = nfl_2025()
+        return [], None
+    pack = load_nfl_pack(year)
+    if not pack:
+        return [], pack
     found = []
     for player in pack.get("players") or []:
         if str(player.get("name") or "").strip().casefold() == want:
             found.append(player)
-    return found
+    return found, pack
 
 
 def roster_pf(settings):
@@ -290,7 +407,7 @@ def weeks_expected(league, state):
         return []
     if str(league.get("status") or "") == "complete":
         return weeks
-    done = complete_through(state, LEAGUE_SEASON, weeks[-1])
+    done = complete_through(state, sleeper_league_season(), weeks[-1])
     if done is None:
         return []
     return [week for week in weeks if week <= done]
@@ -589,9 +706,9 @@ def build_snapshot(link):
             mine.append(rid)
         user = users_by_id.get(str(roster.get("owner_id")))
         row = standings.get(rid) if standings else None
-        starters = describe_ids(slot_ids(roster, "starters"), names)
+        starters = roster_entries(slot_ids(roster, "starters"), names)
         bench_ids = [pid for pid in slot_ids(roster, "players") if pid not in set(slot_ids(roster, "starters"))]
-        bench = describe_ids(bench_ids, names)
+        bench = roster_entries(bench_ids, names)
         teams.append({
             "roster_id": rid,
             "label": team_label(user, rid),
@@ -625,7 +742,7 @@ def _safe_state():
 def context_from(snapshot, link):
     league = snapshot["league"]
     name = str(league.get("name") or "").strip() or "unnamed"
-    lines = [f"League: {name} (id {link['league_id']}), season {LEAGUE_SEASON}"]
+    lines = [f"League: {name} (id {link['league_id']}), season {sleeper_league_season()}"]
     if snapshot["mine"]:
         lines.append("Your roster ids: " + ", ".join(str(rid) for rid in snapshot["mine"]))
     else:
@@ -639,9 +756,9 @@ def context_from(snapshot, link):
             bits.append(f"{team['record']}, {team['pf']:.1f} points")
         lines.append("- " + ", ".join(bits))
         if team["starters"]:
-            lines.append("  Starters: " + ", ".join(team["starters"]))
+            lines.append("  Starters: " + ", ".join(name for _, name in team["starters"]))
         if team["bench"]:
-            lines.append("  Bench: " + ", ".join(team["bench"]))
+            lines.append("  Bench: " + ", ".join(name for _, name in team["bench"]))
     text = "\n".join(lines)
     if len(text) > 12000:
         text = text[:12000] + "\nContext truncated."
@@ -692,7 +809,7 @@ def layout(title, body, *, user=None, war=False):
             '<nav class="rooms" aria-label="Rooms">'
             '<a href="/home">Home</a>'
             '<a href="/screener/">Screener</a>'
-            '<a href="/war-room">War Room</a>'
+            '<a href="/war-room">War Room <span class="nav-preview">Preview</span></a>'
             '<form method="post" action="/logout"><button type="submit">Sign out</button></form>'
             "</nav>"
         )
@@ -774,16 +891,39 @@ def render_odds(snapshot):
     return f'<p class="hero quiet">{h(" · ".join(bits))}</p>' 
 
 
-def render_roster_list(label, names):
-    if not names:
+def render_roster_list(label, entries):
+    if not entries:
         return ""
     items = []
-    for name in names:
-        if name.startswith("id "):
-            items.append(f"<li>{h(name)}</li>")
+    for entry in entries:
+        if isinstance(entry, tuple):
+            pid, name = entry
+            if pid:
+                href = "/player?sleeper=" + urllib.parse.quote(str(pid))
+                items.append(f'<li><a href="{href}">{h(name)}</a></li>')
+            else:
+                items.append(f"<li>{h(name)}</li>")
+        elif str(entry).startswith("id "):
+            items.append(f"<li>{h(entry)}</li>")
         else:
-            items.append(f'<li><a href="/player?name={urllib.parse.quote(name)}">{h(name)}</a></li>')
+            items.append(
+                f'<li><a href="/player?name={urllib.parse.quote(str(entry))}">{h(entry)}</a></li>'
+            )
     return f"<p class=\"kicker\">{h(label)}</p><ul class=\"roster\">{''.join(items)}</ul>"
+
+
+def roster_entries(pids, names):
+    lines = []
+    for pid in pids:
+        if names is None:
+            lines.append((None, f"id {pid} (player file did not load)"))
+            continue
+        name = names.get(str(pid))
+        if name:
+            lines.append((str(pid), name))
+        else:
+            lines.append((str(pid), f"id {pid} (name not on the player file)"))
+    return lines
 
 
 def page_home(user, link, choices, snapshot, error=None):
@@ -806,7 +946,7 @@ def page_home(user, link, choices, snapshot, error=None):
                 "<button type=\"submit\">Save</button></form></li>"
             )
         choice_html = (
-            '<section class="card"><p class="kicker">2025 leagues</p><ul class="league-list">'
+            f'<section class="card"><p class="kicker">{h(sleeper_league_season())} leagues</p><ul class="league-list">'
             + "".join(items)
             + "</ul></section>"
         )
@@ -869,7 +1009,7 @@ def page_home(user, link, choices, snapshot, error=None):
   <form method="post" action="/sleeper/lookup">
     <label for="username">Sleeper username</label>
     <input id="username" name="username" autocomplete="off" required>
-    <div class="row"><button class="primary" type="submit">Pull 2025 leagues</button></div>
+    <div class="row"><button class="primary" type="submit">Pull """ + str(sleeper_league_season()) + """ leagues</button></div>
   </form>
 </section>
 """
@@ -877,81 +1017,297 @@ def page_home(user, link, choices, snapshot, error=None):
     return layout("Home", body, user=user)
 
 
-def page_player(name, user=None):
-    pack = nfl_2025()
-    source = pack.get("source") or ""
-    season = pack.get("season")
-    found = find_players(name) if name else []
-    if not name:
-        inner = "<p>Open a player from the screener.</p>"
-    elif not found:
-        inner = f"<p>{h(name)} is not in the {h(season)} NFL screener file.</p>"
-    else:
-        cards = []
-        fields = [
-            ("pos", "Pos"),
-            ("team", "Team"),
-            ("age", "Age"),
-            ("gp", "GP"),
-            ("ppr", "PPR"),
-            ("ppg", "PPG"),
-            ("py", "Pass Yds"),
-            ("ptd", "Pass TD"),
-            ("ry", "Rush Yds"),
-            ("rtd", "Rush TD"),
-            ("rec", "REC"),
-            ("rey", "Rec Yds"),
-            ("retd", "Rec TD"),
-            ("tgt", "TGT"),
-            ("td", "TD"),
-        ]
-        for player in found:
-            pos = player.get("pos") or ""
-            rows = []
-            for key, label in fields:
-                if key not in player or player[key] is None or player[key] == "":
-                    continue
-                value = player[key]
-                if isinstance(value, float):
-                    shown = f"{value:.1f}"
+NFL_STAT_FIELDS = [
+    ("pos", "Pos"),
+    ("team", "Team"),
+    ("age", "Age"),
+    ("gp", "GP"),
+    ("ppr", "PPR"),
+    ("ppg", "PPG"),
+    ("py", "Pass Yds"),
+    ("ptd", "Pass TD"),
+    ("ry", "Rush Yds"),
+    ("rtd", "Rush TD"),
+    ("rec", "REC"),
+    ("rey", "Rec Yds"),
+    ("retd", "Rec TD"),
+    ("tgt", "TGT"),
+    ("td", "TD"),
+]
+
+COLLEGE_STAT_FIELDS = [
+    ("pos", "Pos"),
+    ("team", "Team"),
+    ("conference", "Conference"),
+    ("gp", "GP"),
+    ("py", "Pass Yds"),
+    ("ptd", "Pass TD"),
+    ("ry", "Rush Yds"),
+    ("rtd", "Rush TD"),
+    ("rey", "Rec Yds"),
+    ("retd", "Rec TD"),
+    ("ty", "Total Yds"),
+    ("td", "Total TD"),
+]
+
+
+def labeled_source(url):
+    if not url:
+        return ""
+    safe = h(url)
+    return f'<p class="aside">Source: <a href="{safe}">{safe}</a></p>'
+
+
+def labeled_sources(urls):
+    if not urls:
+        return ""
+    if isinstance(urls, str):
+        return labeled_source(urls)
+    lines = ['<p class="aside">Sources:</p><ul class="roster">']
+    for url in urls:
+        safe = h(url)
+        lines.append(f'<li><a href="{safe}">{safe}</a></li>')
+    lines.append("</ul>")
+    return "".join(lines)
+
+
+def stat_rows(player, fields):
+    pos = player.get("pos") or ""
+    rows = []
+    for key, label in fields:
+        if key not in player or player[key] is None or player[key] == "":
+            continue
+        value = player[key]
+        if isinstance(value, float):
+            shown = f"{value:.1f}"
+        else:
+            shown = str(value)
+        if key == "pos":
+            shown_html = f'<span class="pos {h(pos)}">{h(shown)}</span>'
+        else:
+            shown_html = h(shown)
+        rows.append(f"<tr><th>{h(label)}</th><td>{shown_html}</td></tr>")
+    return rows
+
+
+def render_nfl_stat_card(player, season, source):
+    pos = player.get("pos") or ""
+    rows = stat_rows(player, NFL_STAT_FIELDS)
+    return (
+        "<section class=\"card\">"
+        f"<p class=\"player-name\">{h(player.get('name'))}</p>"
+        f"<table>{''.join(rows)}</table>"
+        "<p><strong>Leverage is not the full model yet.</strong></p>"
+        f"<p class=\"aside\">{h(season)} NFL regular season (QB/RB/WR/TE).</p>"
+        + labeled_source(source)
+        + "</section>"
+    )
+
+
+def render_college_stat_card(player, season, sources):
+    rows = stat_rows(player, COLLEGE_STAT_FIELDS)
+    return (
+        "<section class=\"card\">"
+        f"<p class=\"player-name\">{h(player.get('name'))}</p>"
+        f"<table>{''.join(rows)}</table>"
+        f"<p class=\"aside\">{h(season)} college season totals.</p>"
+        + labeled_sources(sources)
+        + "</section>"
+    )
+
+
+def render_empty_card(title, lines):
+    body = "".join(f"<p>{h(line)}</p>" for line in lines)
+    return f"<section class=\"card\"><p class=\"player-name\">{h(title)}</p>{body}</section>"
+
+
+def missing_nfl_season_message(want):
+    built = sorted(nfl_catalog_years())
+    if built:
+        span = f"{built[0]}–{built[-1]}"
+        newest = built[-1]
+        return (
+            f"No NFL screener file for the {want} season is in this build. "
+            f"Published nflverse regular-season stats on disk run {span}. "
+            f"Newest season: {newest}."
+        )
+    return (
+        f"No NFL screener file for the {want} season is in this build. "
+        "No nflverse seasons downloaded yet."
+    )
+
+
+def page_player(query, user=None):
+    sleeper_id = (query.get("sleeper") or "").strip()
+    cid = (query.get("cid") or "").strip()
+    season_q = (query.get("season") or "").strip()
+    legacy_name = (query.get("name") or "").strip()
+    stats_season, stats_on_disk = nfl_stats_season()
+    inner = ""
+
+    if sleeper_id:
+        try:
+            index = load_sleeper_index()
+        except SleeperError:
+            index = None
+        rec = (index or {}).get(str(sleeper_id))
+        if not rec:
+            inner = "<p>That player is not on the Sleeper NFL player file.</p>"
+        else:
+            title = rec["name"]
+            pos = rec.get("position") or ""
+            team = rec.get("team") or ""
+            header_bits = [bit for bit in (pos, team) if bit]
+            if pos == "DEF":
+                inner = render_empty_card(
+                    title,
+                    [
+                        " · ".join(header_bits) if header_bits else "Team defense",
+                        "The NFL screener only includes QB, RB, WR, and TE counting stats from nflverse. "
+                        "Team defense scoring is not in that source.",
+                    ],
+                )
+            elif pos == "K":
+                inner = render_empty_card(
+                    title,
+                    [
+                        " · ".join(header_bits) if header_bits else "Kicker",
+                        "The NFL screener only includes QB, RB, WR, and TE counting stats from nflverse. "
+                        "Kicker scoring is not in that source.",
+                    ],
+                )
+            elif pos in NFL_SKILL:
+                if not stats_on_disk:
+                    inner = render_empty_card(title, [missing_nfl_season_message(stats_season)])
                 else:
-                    shown = str(value)
-                if key == "pos":
-                    shown_html = f'<span class="pos {h(pos)}">{h(shown)}</span>'
-                else:
-                    shown_html = h(shown)
-                rows.append(f"<tr><th>{h(label)}</th><td>{shown_html}</td></tr>")
-            cards.append(
-                "<section class=\"card\">"
-                f"<p class=\"player-name\">{h(player.get('name'))}</p>"
-                f"<table>{''.join(rows)}</table>"
-                "<p><strong>Leverage is not the full model yet.</strong></p>"
-                f"<p class=\"aside\">{h(season)} NFL regular season. Source: {h(source)}</p>"
-                "</section>"
+                    gsis = rec.get("gsis_id") or ""
+                    pack = load_nfl_pack(stats_season)
+                    source = (pack or {}).get("source") or ""
+                    player = nfl_by_gsis(stats_season).get(gsis) if gsis else None
+                    if player:
+                        inner = render_nfl_stat_card(player, stats_season, source)
+                    elif not gsis:
+                        inner = render_empty_card(
+                            title,
+                            [
+                                " · ".join(header_bits) if header_bits else "",
+                                "Sleeper has no nflverse player id for this roster slot, so there is no stat join.",
+                            ],
+                        )
+                    else:
+                        inner = render_empty_card(
+                            title,
+                            [
+                                " · ".join(header_bits) if header_bits else "",
+                                f"No published {stats_season} regular-season skill stats for this player in nflverse yet. "
+                                "Blank where the source has no row — nothing invented here.",
+                            ],
+                        )
+            else:
+                inner = render_empty_card(
+                    title,
+                    [
+                        " · ".join(header_bits) if header_bits else pos or "Player",
+                        "No screener stats for this position in the published sources.",
+                    ],
+                )
+    elif (query.get("gsis") or "").strip():
+        gsis = normalize_gsis(query.get("gsis"))
+        try:
+            year = int(season_q) if season_q else stats_season
+        except (TypeError, ValueError):
+            year = stats_season
+        if year not in nfl_catalog_years():
+            inner = render_empty_card(
+                gsis,
+                [missing_nfl_season_message(year)],
             )
-        inner = "".join(cards)
+        else:
+            pack = load_nfl_pack(year)
+            source = (pack or {}).get("source") or ""
+            player = nfl_by_gsis(year).get(gsis)
+            if player:
+                inner = render_nfl_stat_card(player, year, source)
+            else:
+                inner = render_empty_card(
+                    gsis,
+                    [
+                        f"No published {year} regular-season skill stats for nflverse id {gsis}.",
+                        "Blank where the source has no row — nothing invented here.",
+                    ],
+                )
+    elif cid:
+        try:
+            year = int(season_q) if season_q else int(load_catalog().get("college", {}).get("defaultSeason") or 0)
+        except (TypeError, ValueError):
+            year = 0
+        if year <= 0:
+            inner = "<p>Pick a college season from the screener.</p>"
+        elif year not in (load_catalog().get("college", {}).get("seasons") or []):
+            inner = render_empty_card(
+                "College player",
+                [f"No college screener file for {year} is in this build."],
+            )
+        else:
+            pack = load_college_pack(year)
+            player = find_college_player(year, cid)
+            if player:
+                inner = render_college_stat_card(player, year, (pack or {}).get("source"))
+            else:
+                inner = render_empty_card(
+                    "College player",
+                    [
+                        f"No row for player id {cid} in the {year} college screener file.",
+                        "Blank where the source has no row — nothing invented here.",
+                    ],
+                )
+    elif legacy_name:
+        if not stats_on_disk:
+            inner = render_empty_card(legacy_name, [missing_nfl_season_message(stats_season)])
+        else:
+            found, pack = find_players_by_name(legacy_name, stats_season)
+            if not found:
+                inner = render_empty_card(
+                    legacy_name,
+                    [
+                        f"No published {stats_season} regular-season skill stats under this name in nflverse.",
+                        "Try opening the player from your roster or the screener so Sleeper ids can join the file.",
+                    ],
+                )
+            else:
+                source = (pack or {}).get("source") or ""
+                inner = "".join(render_nfl_stat_card(player, stats_season, source) for player in found)
+    else:
+        inner = "<p>Open a player from the screener or your roster.</p>"
+
     body = inner + '<p><a href="/screener/">Back to the screener</a></p>'
     return layout("Player", body, user=user)
 
 
-def page_war(user, messages, banner=None):
+def page_war(user, messages, ready=True, banner=None):
     parts = []
-    if banner:
-        parts.append(f'<p class="banner">{h(banner)}</p>')
-    if not messages:
-        parts.append('<p class="aside">Your league is the context. Ask about your roster.</p>')
-    for message in messages:
-        who = "You" if message["role"] == "you" else "War Room"
+    if not ready:
         parts.append(
-            f'<article class="bubble"><p class="who">{who}</p><p>{h(message["body"])}</p></article>'
+            '<section class="card"><p class="kicker">Preview</p>'
+            f"<p>{h(WAR_PREVIEW)}</p></section>"
         )
-    parts.append(
-        '<form method="post" action="/war-room">'
-        '<label for="question">Ask the room</label>'
-        '<input id="question" name="question" maxlength="2000" required>'
-        '<div class="row"><button class="primary" type="submit">Send</button></div>'
-        "</form>"
-    )
+    else:
+        if banner:
+            parts.append(f'<p class="banner">{h(banner)}</p>')
+        if not messages:
+            parts.append('<p class="aside">Your league is the context. Ask about your roster.</p>')
+        for message in messages:
+            who = "You" if message["role"] == "you" else "War Room"
+            parts.append(
+                f'<article class="bubble"><p class="who">{who}</p><p>{h(message["body"])}</p></article>'
+            )
+        parts.append(
+            '<form method="post" action="/war-room">'
+            '<label for="question">Ask the room</label>'
+            '<input id="question" name="question" maxlength="2000" required>'
+            '<div class="row"><button class="primary" type="submit">Send</button></div>'
+            "</form>"
+        )
     return layout("War Room", "\n".join(parts), user=user, war=True)
 
 
@@ -1056,8 +1412,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/player":
             query = urllib.parse.parse_qs(parsed.query)
-            name = (query.get("name") or [""])[0]
-            self.send_html(200, page_player(name, user=user))
+            params = {key: values[0] for key, values in query.items() if values}
+            self.send_html(200, page_player(params, user=user))
             return
         if path == "/war-room":
             if not user:
@@ -1158,7 +1514,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise SleeperError(404)
             sleeper_user_id = str(payload["user_id"])
             canonical = clean_username(payload.get("username") or username) or username
-            leagues = sleeper_json(f"/user/{urllib.parse.quote(sleeper_user_id)}/leagues/nfl/{LEAGUE_SEASON}")
+            season = sleeper_league_season()
+            leagues = sleeper_json(f"/user/{urllib.parse.quote(sleeper_user_id)}/leagues/nfl/{season}")
             if not isinstance(leagues, list):
                 raise SleeperError(0)
         except SleeperError as exc:
@@ -1203,7 +1560,13 @@ class Handler(BaseHTTPRequestHandler):
                 [(user["id"], league_id, name) for league_id, name in choices],
             )
         if not choices:
-            self.send_html(200, self.home_html(user, error="No 2025 NFL leagues on that Sleeper user."))
+            self.send_html(
+                200,
+                self.home_html(
+                    user,
+                    error=f"No {sleeper_league_season()} NFL leagues on that Sleeper user.",
+                ),
+            )
             return
         self.redirect("/home")
 
@@ -1258,9 +1621,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def war_html(self, user, banner=None):
         key = (os.environ.get("RAZZLE_MODEL_KEY") or "").strip()
-        if not key and not banner:
-            banner = KEY_MISSING
-        return page_war(user, self.war_messages(user["id"]), banner=banner)
+        ready = bool(key)
+        messages = self.war_messages(user["id"]) if ready else []
+        return page_war(user, messages, ready=ready, banner=banner if ready else None)
 
     def post_war(self, user, form):
         question = (form.get("question") or "").strip()
@@ -1270,15 +1633,6 @@ class Handler(BaseHTTPRequestHandler):
         question = question[:2000]
         key = (os.environ.get("RAZZLE_MODEL_KEY") or "").strip()
         if not key:
-            with DB() as conn:
-                conn.execute(
-                    "INSERT INTO war_messages (user_id, role, body, created_at) VALUES (?, ?, ?, ?)",
-                    (user["id"], "you", question, now()),
-                )
-                conn.execute(
-                    "INSERT INTO war_messages (user_id, role, body, created_at) VALUES (?, ?, ?, ?)",
-                    (user["id"], "room", KEY_MISSING, now()),
-                )
             self.redirect("/war-room")
             return
         link = get_link(user["id"])

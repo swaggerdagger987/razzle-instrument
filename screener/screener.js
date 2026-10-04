@@ -273,7 +273,21 @@ function render() {
     badge.textContent = player.pos || "";
     const name = document.createElement("a");
     name.className = "name";
-    name.href = "/player?name=" + encodeURIComponent(player.name);
+    if (state.universe === "college" && player.cid) {
+      name.href =
+        "/player?cid=" +
+        encodeURIComponent(player.cid) +
+        "&season=" +
+        encodeURIComponent(String(state.season));
+    } else if (player.gsisId) {
+      name.href =
+        "/player?gsis=" +
+        encodeURIComponent(player.gsisId) +
+        "&season=" +
+        encodeURIComponent(String(state.season));
+    } else {
+      name.href = "/player?name=" + encodeURIComponent(player.name);
+    }
     name.textContent = player.name;
     const sub = document.createElement("span");
     sub.className = "meta";
