@@ -271,23 +271,25 @@ function render() {
     const badge = document.createElement("span");
     badge.className = "pos " + (player.pos || "");
     badge.textContent = player.pos || "";
-    const name = document.createElement("a");
-    name.className = "name";
+    let name;
     if (state.universe === "college" && player.cid) {
+      name = document.createElement("a");
       name.href =
         "/player?cid=" +
         encodeURIComponent(player.cid) +
         "&season=" +
         encodeURIComponent(String(state.season));
-    } else if (player.gsisId) {
+    } else if (state.universe === "nfl" && player.gsisId) {
+      name = document.createElement("a");
       name.href =
         "/player?gsis=" +
         encodeURIComponent(player.gsisId) +
         "&season=" +
         encodeURIComponent(String(state.season));
     } else {
-      name.href = "/player?name=" + encodeURIComponent(player.name);
+      name = document.createElement("span");
     }
+    name.className = "name";
     name.textContent = player.name;
     const sub = document.createElement("span");
     sub.className = "meta";
