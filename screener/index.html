@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screener</title>
+<link rel="stylesheet" href="screener.css">
+</head>
+<body>
+<header>
+  <h1>Screener</h1>
+  <div class="switch" role="tablist" aria-label="League">
+    <button type="button" id="tab-nfl" role="tab" aria-selected="true">NFL</button>
+    <button type="button" id="tab-college" role="tab" aria-selected="false">College</button>
+  </div>
+  <span id="season" class="season"></span>
+</header>
+<div class="toolbar">
+  <div class="chips" role="group" aria-label="Position">
+    <button type="button" class="chip on" data-pos="ALL">All</button>
+    <button type="button" class="chip" data-pos="QB">QB</button>
+    <button type="button" class="chip" data-pos="RB">RB</button>
+    <button type="button" class="chip" data-pos="WR">WR</button>
+    <button type="button" class="chip" data-pos="TE">TE</button>
+  </div>
+  <input id="search" type="search" placeholder="search players" aria-label="Search players" autocomplete="off">
+  <span id="count" class="count" aria-live="polite"></span>
+</div>
+<div class="table-wrap">
+  <table>
+    <caption class="sr-only" id="caption">NFL player screener</caption>
+    <thead id="head"></thead>
+    <tbody id="body"></tbody>
+  </table>
+  <p id="empty" class="empty" hidden></p>
+</div>
+<footer>the screener is forever free.</footer>
+<script src="screener.js"></script>
+</body>
+</html>
