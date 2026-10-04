@@ -1,4 +1,4 @@
-/* Screener. Loads screener/data/nfl.json and screener/data/college.json. */
+/* Screener. Season files live under screener/data/nfl and screener/data/college. */
 
 const NFL_COLS = [
   { key: "posRank", label: "Pos Rank" },
@@ -34,15 +34,28 @@ const state = {
   query: "",
   sortKey: "ppr",
   sortDir: "desc",
-  sets: { nfl: null, college: null },
+  season: null,
+  week: "",
 };
+
+const cache = {
+  nfl: new Map(),
+  weeks: new Map(),
+  college: new Map(),
+};
+
+let catalog = null;
+let view = null;
+let loadId = 0;
 
 const head = document.getElementById("head");
 const body = document.getElementById("body");
 const empty = document.getElementById("empty");
 const count = document.getElementById("count");
-const season = document.getElementById("season");
 const caption = document.getElementById("caption");
+const seasonSelect = document.getElementById("season-select");
+const weekSelect = document.getElementById("week-select");
+const weekControl = document.getElementById("week-control");
 
 function cols() {
   return state.universe === "nfl" ? NFL_COLS : COLLEGE_COLS;
@@ -85,15 +98,60 @@ function addPosRank(players) {
   }
 }
 
-function current() {
-  return state.sets[state.universe];
+function nflSeason(year) {
+  return catalog.nfl.seasons.find((row) => row.year === year);
+}
+
+function yearsForUniverse() {
+  if (state.universe === "nfl") {
+    return catalog.nfl.seasons.map((row) => row.year).slice().reverse();
+  }
+  return catalog.college.seasons.slice().reverse();
+}
+
+function fillSeason() {
+  seasonSelect.replaceChildren();
+  for (const year of yearsForUniverse()) {
+    const option = document.createElement("option");
+    option.value = String(year);
+    option.textContent = String(year);
+    if (year === state.season) option.selected = true;
+    seasonSelect.appendChild(option);
+  }
+}
+
+function fillWeeks() {
+  if (state.universe !== "nfl") {
+    weekControl.hidden = true;
+    return;
+  }
+  weekControl.hidden = false;
+  const meta = nflSeason(state.season);
+  weekSelect.replaceChildren();
+  const seasonOption = document.createElement("option");
+  seasonOption.value = "";
+  seasonOption.textContent = "Season";
+  weekSelect.appendChild(seasonOption);
+  const disabled = new Set((meta && meta.disabledWeeks) || []);
+  const present = (meta && meta.weeks) || [];
+  const last = Math.max(0, ...present, ...disabled);
+  for (let week = 1; week <= last; week += 1) {
+    const option = document.createElement("option");
+    option.value = String(week);
+    option.textContent = "Week " + week;
+    if (disabled.has(week) || present.indexOf(week) === -1) {
+      option.disabled = true;
+    }
+    if (state.week === String(week)) option.selected = true;
+    weekSelect.appendChild(option);
+  }
+  if (!state.week) seasonOption.selected = true;
 }
 
 function visible() {
-  const data = current();
-  if (!data) return [];
+  if (!view || !view.players) return [];
   const q = state.query.trim().toLowerCase();
-  const rows = data.players.filter((player) => {
+  const rows = view.players.filter((player) => {
     if (state.pos !== "ALL" && player.pos !== state.pos) return false;
     if (q && !player.name.toLowerCase().includes(q)) return false;
     return true;
@@ -163,32 +221,38 @@ function renderHead() {
   head.replaceChildren(row);
 }
 
+function scopeLabel() {
+  const league = state.universe === "nfl" ? "NFL" : "College";
+  if (!state.season) return league + " player screener";
+  if (state.universe === "nfl" && state.week) {
+    return league + " " + state.season + " week " + state.week + " player screener";
+  }
+  return league + " " + state.season + " player screener";
+}
+
 function render() {
-  const data = current();
   renderHead();
-  if (!data) {
+  caption.textContent = scopeLabel();
+  if (!view) {
     body.replaceChildren();
     empty.hidden = false;
-    empty.textContent = "Loading.";
+    empty.textContent = "pulling film...";
     count.textContent = "";
     return;
   }
-  if (data.error) {
+  if (view.error) {
     body.replaceChildren();
     empty.hidden = false;
-    empty.textContent = data.error;
+    empty.textContent = view.error;
     count.textContent = "";
-    season.textContent = "";
     return;
   }
-  season.textContent = data.season ? String(data.season) : "";
-  caption.textContent = (state.universe === "nfl" ? "NFL" : "College") + " player screener";
   const rows = visible();
   count.textContent = rows.length + (rows.length === 1 ? " player" : " players");
-  if (!data.players.length) {
+  if (!view.players.length) {
     body.replaceChildren();
     empty.hidden = false;
-    empty.textContent = data.empty || "No players in this file.";
+    empty.textContent = "No players in this file.";
     return;
   }
   empty.hidden = rows.length > 0;
@@ -227,18 +291,86 @@ function render() {
   body.replaceChildren(frag);
 }
 
+async function load(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(String(response.status));
+  return response.json();
+}
+
+function loadNfl(year) {
+  if (!cache.nfl.has(year)) {
+    cache.nfl.set(year, load("data/nfl/" + year + ".json"));
+  }
+  return cache.nfl.get(year);
+}
+
+function loadWeeks(year) {
+  if (!cache.weeks.has(year)) {
+    cache.weeks.set(year, load("data/nfl/" + year + "-weeks.json"));
+  }
+  return cache.weeks.get(year);
+}
+
+function loadCollege(year) {
+  if (!cache.college.has(year)) {
+    cache.college.set(year, load("data/college/" + year + ".json"));
+  }
+  return cache.college.get(year);
+}
+
+async function refresh() {
+  const id = ++loadId;
+  const universe = state.universe;
+  const season = state.season;
+  const week = state.week;
+  view = null;
+  render();
+  try {
+    let data;
+    if (universe === "nfl" && week) {
+      const pack = await loadWeeks(season);
+      const players = (pack.weeks && pack.weeks[week]) || [];
+      data = { season: pack.season, players: players.slice() };
+      addPosRank(data.players);
+    } else if (universe === "nfl") {
+      const pack = await loadNfl(season);
+      data = { season: pack.season, players: pack.players.slice() };
+      addPosRank(data.players);
+    } else {
+      const pack = await loadCollege(season);
+      data = { season: pack.season, players: pack.players.slice() };
+    }
+    if (id !== loadId) return;
+    view = data;
+  } catch (err) {
+    if (id !== loadId) return;
+    cache.nfl.delete(season);
+    cache.weeks.delete(season);
+    cache.college.delete(season);
+    view = {
+      error: "That file did not load. Expected data for " + universe + " " + season + ".",
+      players: [],
+    };
+  }
+  render();
+}
+
 function setUniverse(next) {
   state.universe = next;
   state.pos = "ALL";
+  state.week = "";
   state.sortKey = next === "nfl" ? "ppr" : "ty";
   state.sortDir = "desc";
+  state.season = next === "nfl" ? catalog.nfl.defaultSeason : catalog.college.defaultSeason;
   document.body.classList.toggle("college", next === "college");
   document.getElementById("tab-nfl").setAttribute("aria-selected", next === "nfl" ? "true" : "false");
   document.getElementById("tab-college").setAttribute("aria-selected", next === "college" ? "true" : "false");
   for (const chip of document.querySelectorAll(".chip")) {
     chip.classList.toggle("on", chip.dataset.pos === "ALL");
   }
-  render();
+  fillSeason();
+  fillWeeks();
+  refresh();
 }
 
 document.getElementById("tab-nfl").addEventListener("click", () => setUniverse("nfl"));
@@ -259,26 +391,29 @@ document.getElementById("search").addEventListener("input", (event) => {
   render();
 });
 
-async function load(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(String(response.status));
-  return response.json();
-}
+seasonSelect.addEventListener("change", () => {
+  state.season = Number(seasonSelect.value);
+  const meta = state.universe === "nfl" ? nflSeason(state.season) : null;
+  if (!meta || (state.week && meta.weeks.indexOf(Number(state.week)) === -1)) {
+    state.week = "";
+  }
+  fillWeeks();
+  refresh();
+});
 
-const COLLEGE_EMPTY = "The college file is not in the repo yet. Tried https://github.com/sportsdataverse/sportsdataverse-data/releases/download/espn_cfb_player_box/player_box_2025.csv.gz (game rows, no school or position), plus the 2026 passing, rushing, and receiving season files under espn_cfb_passing, espn_cfb_rushing, and espn_cfb_receiving.";
+weekSelect.addEventListener("change", () => {
+  state.week = weekSelect.value;
+  refresh();
+});
 
-Promise.all([
-  load("data/nfl.json").then((data) => {
-    addPosRank(data.players || []);
-    state.sets.nfl = data;
-  }).catch(() => {
-    state.sets.nfl = { error: "NFL stats did not load. Expected data/nfl.json.", players: [] };
-  }),
-  load("data/college.json").then((data) => {
-    data.players = data.players || [];
-    if (!data.players.length) data.empty = COLLEGE_EMPTY;
-    state.sets.college = data;
-  }).catch(() => {
-    state.sets.college = { error: COLLEGE_EMPTY, players: [] };
-  }),
-]).then(() => render());
+load("data/catalog.json").then((data) => {
+  catalog = data;
+  state.season = data.nfl.defaultSeason;
+  state.week = "";
+  fillSeason();
+  fillWeeks();
+  refresh();
+}).catch(() => {
+  view = { error: "The season list did not load. Expected data/catalog.json.", players: [] };
+  render();
+});

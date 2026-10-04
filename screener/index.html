@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Screener</title>
+<title>Razzle Screener</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Luckiest+Guy&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -12,14 +12,23 @@
 </head>
 <body>
 <header>
+  <a class="logo" href="index.html" aria-label="Razzle">
+    <span class="logo-mark" aria-hidden="true">&#x1F42F;</span>
+    <span class="logo-text">Razzle</span>
+  </a>
   <h1>SCREENER</h1>
   <div class="switch" role="tablist" aria-label="League">
     <button type="button" id="tab-nfl" role="tab" aria-selected="true">NFL</button>
     <button type="button" id="tab-college" role="tab" aria-selected="false">College</button>
   </div>
-  <span id="season" class="season"></span>
 </header>
 <div class="toolbar">
+  <label class="control">Season
+    <select id="season-select" aria-label="Season"></select>
+  </label>
+  <label class="control" id="week-control">Week
+    <select id="week-select" aria-label="Week"></select>
+  </label>
   <div class="chips" role="group" aria-label="Position">
     <button type="button" class="chip on" data-pos="ALL">All</button>
     <button type="button" class="chip" data-pos="QB">QB</button>
