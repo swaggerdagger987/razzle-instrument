@@ -11,7 +11,11 @@ body {
   font-size: 13px;
 }
 
-header, .toolbar, footer {
+body.screener-app header.screener-header {
+  flex: none;
+}
+
+header.screener-header, .toolbar, footer.screener-footer {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -20,8 +24,17 @@ header, .toolbar, footer {
   flex: none;
 }
 
-header {
+header.screener-header {
   background: var(--bg);
+  border-bottom: 3px solid var(--ink);
+}
+
+header.screener-header nav.rooms {
+  margin-left: auto;
+}
+
+header.screener-header .switch {
+  flex: none;
 }
 
 h1 {
@@ -240,18 +253,6 @@ th.ident { z-index: 4; background: var(--bg-warm); }
 .name { color: var(--ink); }
 a.name { color: var(--ink); text-decoration-thickness: 2px; text-underline-offset: 2px; }
 a.name:hover { color: var(--orange); }
-.shell-nav { margin-left: auto; display: flex; gap: 8px; }
-.shell-nav a {
-  font-family: var(--font-display);
-  color: var(--ink);
-  text-decoration: none;
-  font-size: 16px;
-  border: 2px solid var(--ink);
-  border-radius: var(--radius-lg);
-  padding: 4px 10px;
-  background: var(--bg-card);
-  box-shadow: 2px 2px 0 var(--ink);
-}
 
 .meta { color: var(--ink-light); margin-left: 8px; }
 
@@ -288,7 +289,7 @@ tbody tr:hover td { background: var(--orange-light); }
   max-width: 62ch;
 }
 
-footer {
+footer.screener-footer {
   border-top: 3px solid var(--ink);
   background: var(--bg-warm);
   color: var(--ink-medium);
@@ -296,7 +297,7 @@ footer {
   font-size: 13px;
 }
 
-.watermark {
+.watermark.screener-watermark {
   position: fixed;
   right: 18px;
   bottom: 14px;

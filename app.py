@@ -37,6 +37,43 @@ WAR_PREVIEW = (
     "The War Room is in preview. League chat is not wired up yet — "
     "the odds engine and formula builder come first."
 )
+WAR_SAMPLE_THREAD = (
+    {
+        "who": "Razzle",
+        "body": (
+            "Urgent — your WR2 slot is a coin flip this week. "
+            "If you leave the wrong name in, you are donating a win."
+        ),
+        "urgent": True,
+    },
+    {
+        "who": "Hawkeye",
+        "body": (
+            "Snap share on your flex is down two weeks straight. "
+            "The tape says the role is shrinking, not the talent."
+        ),
+    },
+    {
+        "who": "Dr. Dolphin",
+        "body": "Start the guy who gets the high-value targets. Bench the gadget play.",
+    },
+)
+POS_NFL_STATS = {
+    "QB": ("gp", "ppr", "ppg", "py", "ptd", "ry", "rtd", "td"),
+    "RB": ("gp", "ppr", "ppg", "ry", "rtd", "rec", "rey", "retd", "tgt"),
+    "WR": ("gp", "ppr", "ppg", "rec", "rey", "retd", "tgt", "td"),
+    "TE": ("gp", "ppr", "ppg", "rec", "rey", "retd", "tgt", "td"),
+}
+SAMPLE_VERDICT = {
+    "QB": "Start him if the rushing floor is still there — passing volume carries the week.",
+    "RB": "Start him. Touch share is sitting on the starter line.",
+    "WR": "Start him. Targets are the whole story until the box adjusts.",
+    "TE": "Flex him. Red-zone looks are the edge; everything else is noise.",
+}
+SAMPLE_LEVERAGE = (
+    "Leverage read (sample): rostered in most leagues, "
+    "but the trade market still sleeps on this usage curve."
+)
 ODDS_MISSING = "Championship odds are not computed yet."
 NFL_SKILL = frozenset({"QB", "RB", "WR", "TE"})
 MODEL_URL_DEFAULT = "https://api.openai.com/v1/chat/completions"
@@ -802,25 +839,41 @@ def ask_model(question, context):
     return text[:4000], True
 
 
-def layout(title, body, *, user=None, war=False):
-    nav = ""
-    if user:
-        nav = (
+def shell_nav(user, active=None):
+    if not user:
+        screener_cls = ' class="nav-on"' if active == "screener" else ""
+        return (
             '<nav class="rooms" aria-label="Rooms">'
-            '<a href="/home">Home</a>'
-            '<a href="/screener/">Screener</a>'
-            '<a href="/war-room">War Room <span class="nav-preview">Preview</span></a>'
-            '<form method="post" action="/logout"><button type="submit">Sign out</button></form>'
+            f'<a href="/screener/"{screener_cls}>Screener</a>'
+            '<a href="/">Sign in</a>'
             "</nav>"
         )
+
+    def item(href, label, key):
+        cls = ' class="nav-on"' if active == key else ""
+        return f'<a href="{href}"{cls}>{label}</a>'
+
+    return (
+        '<nav class="rooms" aria-label="Rooms">'
+        + item("/home", "Home", "home")
+        + item("/screener/", "Screener", "screener")
+        + '<a href="/war-room">War Room <span class="nav-preview">Preview</span></a>'
+        + '<form method="post" action="/logout"><button type="submit">Sign out</button></form>'
+        + "</nav>"
+    )
+
+
+def layout(title, body, *, user=None, war=False, active=None, tagline=None):
     logo_href = "/home" if user else "/"
     klass = "war" if war else ""
+    tagline_html = f'<p class="page-kicker">{h(tagline)}</p>' if tagline else ""
+    doc_title = f"{title} · Razzle" if title != "Razzle" else "Razzle"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{h(title)}</title>
+<title>{h(doc_title)}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Luckiest+Guy&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -829,13 +882,14 @@ def layout(title, body, *, user=None, war=False):
 </head>
 <body class="{klass}">
 <header>
-  <a class="logo" href="{logo_href}" aria-label="Razzle">
+  <a class="logo" href="{logo_href}" aria-label="Razzle home">
     <span class="logo-mark" aria-hidden="true">&#x1F42F;</span>
     <span class="logo-text">Razzle</span>
   </a>
   <h1>{h(title)}</h1>
-  {nav}
+  {shell_nav(user, active)}
 </header>
+{tagline_html}
 <main>
 {body}
 <p class="watermark">razzle.lol — let's razzle dazzle em baby</p>
@@ -873,7 +927,13 @@ def page_auth(error=None):
 </div>
 <p class="aside">The screener is open. <a href="/screener/">Go to the screener</a></p>
 """
-    return layout("Razzle", body, user=None)
+    return layout(
+        "Sign in",
+        body,
+        user=None,
+        active="signin",
+        tagline="The fantasy football research lab. Forever free.",
+    )
 
 
 def render_odds(snapshot):
@@ -986,16 +1046,26 @@ def page_home(user, link, choices, snapshot, error=None):
         )
         note = ""
         if snapshot.get("share_note"):
-            note = f'<p class="aside">{h(snapshot["share_note"])}</p>'
+            note = f'<p class="hero-note">{h(snapshot["share_note"])}</p>'
+        sample_flag = ""
+        if my_teams:
+            sample_flag = (
+                '<p class="flag-line"><span class="sample-badge">Sample</span> '
+                "Trade radar flag — full leverage model not live yet; "
+                "odds on this page stay thin or bracket-only until the engine ships."
+                "</p>"
+            )
         roster_html = (
-            '<section class="card"><p class="kicker">Championship odds</p>'
+            '<section class="card card-stripe card-hero">'
+            '<p class="kicker">Championship odds</p>'
             + render_odds(snapshot)
             + note
             + "</section>"
+            + sample_flag
             + "".join(blocks)
             + '<section class="card"><p class="kicker">League</p>'
             + table
-            + note
+            + (f'<p class="hero-note">{h(snapshot["share_note"])}</p>' if snapshot.get("share_note") else "")
             + "</section>"
         )
     elif link and link.get("league_id"):
@@ -1013,8 +1083,16 @@ def page_home(user, link, choices, snapshot, error=None):
   </form>
 </section>
 """
-    body = "\n".join([err, saved, form, choice_html, roster_html])
-    return layout("Home", body, user=user)
+    setup_parts = [part for part in (saved, form, choice_html) if part]
+    setup_block = "".join(setup_parts)
+    if link and link.get("league_id") and setup_block:
+        setup_block = (
+            '<details class="setup-fold"><summary>Sleeper setup</summary>'
+            + setup_block
+            + "</details>"
+        )
+    body = "\n".join([part for part in (err, roster_html, setup_block) if part])
+    return layout("Home", body, user=user, active="home")
 
 
 NFL_STAT_FIELDS = [
@@ -1051,22 +1129,39 @@ COLLEGE_STAT_FIELDS = [
 ]
 
 
-def labeled_source(url):
+def source_label(url):
+    text = str(url or "")
+    if "nflverse" in text and "stats_player" in text:
+        return "nflverse player stats (regular season)"
+    if "espn_cfb" in text or "sportsdataverse" in text:
+        return "ESPN college play stats (sportsdataverse)"
+    if text:
+        return "Published data file"
+    return ""
+
+
+def labeled_source_for_season(season, url):
     if not url:
         return ""
+    label = source_label(url)
     safe = h(url)
-    return f'<p class="aside">Source: <a href="{safe}">{safe}</a></p>'
+    prefix = f"{h(season)} · " if season else ""
+    return (
+        f'<p class="source-line">{prefix}Source: '
+        f'<a href="{safe}">{h(label)}</a></p>'
+    )
 
 
 def labeled_sources(urls):
     if not urls:
         return ""
     if isinstance(urls, str):
-        return labeled_source(urls)
-    lines = ['<p class="aside">Sources:</p><ul class="roster">']
+        return labeled_source_for_season("", urls)
+    lines = ['<p class="source-line">Sources:</p><ul class="roster">']
     for url in urls:
+        label = source_label(url)
         safe = h(url)
-        lines.append(f'<li><a href="{safe}">{safe}</a></li>')
+        lines.append(f'<li><a href="{safe}">{h(label)}</a></li>')
     lines.append("</ul>")
     return "".join(lines)
 
@@ -1090,16 +1185,51 @@ def stat_rows(player, fields):
     return rows
 
 
+def stat_label(key):
+    for field_key, label in NFL_STAT_FIELDS:
+        if field_key == key:
+            return label
+    return key.upper()
+
+
+def render_stat_grid(player, pos):
+    keys = POS_NFL_STATS.get(pos, POS_NFL_STATS["WR"])
+    cells = []
+    for key in keys:
+        if key not in player or player[key] is None or player[key] == "":
+            continue
+        value = player[key]
+        if isinstance(value, float):
+            shown = f"{value:.1f}"
+        else:
+            shown = str(value)
+        cells.append(
+            f'<div class="stat-cell"><span class="label">{h(stat_label(key))}</span>'
+            f'<span class="value">{h(shown)}</span></div>'
+        )
+    if not cells:
+        return ""
+    return '<div class="stat-grid">' + "".join(cells) + "</div>"
+
+
 def render_nfl_stat_card(player, season, source):
-    pos = player.get("pos") or ""
-    rows = stat_rows(player, NFL_STAT_FIELDS)
+    pos = player.get("pos") or "WR"
+    team = player.get("team") or ""
+    age = player.get("age")
+    meta_bits = [bit for bit in (team, f"Age {age}" if age is not None else "") if bit]
+    verdict = SAMPLE_VERDICT.get(pos, SAMPLE_VERDICT["WR"])
+    stripe = f" card-pos-{pos}" if pos in POS_NFL_STATS else ""
     return (
-        "<section class=\"card\">"
-        f"<p class=\"player-name\">{h(player.get('name'))}</p>"
-        f"<table>{''.join(rows)}</table>"
-        "<p><strong>Leverage is not the full model yet.</strong></p>"
-        f"<p class=\"aside\">{h(season)} NFL regular season (QB/RB/WR/TE).</p>"
-        + labeled_source(source)
+        f'<section class="card card-stripe{stripe}">'
+        '<div class="tear-head">'
+        f'<p class="player-name">{h(player.get("name"))}</p>'
+        f'<span class="pos {h(pos)}">{h(pos)}</span>'
+        f'<span class="tear-meta">{h(" · ".join(meta_bits))}</span>'
+        "</div>"
+        f'<p class="tear-verdict">{h(verdict)} <span class="sample-badge">Sample</span></p>'
+        f'<p class="tear-leverage">{h(SAMPLE_LEVERAGE)} <span class="sample-badge">Sample</span></p>'
+        + render_stat_grid(player, pos)
+        + labeled_source_for_season(f"{season} NFL regular season", source)
         + "</section>"
     )
 
@@ -1281,15 +1411,28 @@ def page_player(query, user=None):
         inner = "<p>Open a player from the screener or your roster.</p>"
 
     body = inner + '<p><a href="/screener/">Back to the screener</a></p>'
-    return layout("Player", body, user=user)
+    return layout("Player", body, user=user, active="player")
 
 
 def page_war(user, messages, ready=True, banner=None):
     parts = []
     if not ready:
         parts.append(
-            '<section class="card"><p class="kicker">Preview</p>'
-            f"<p>{h(WAR_PREVIEW)}</p></section>"
+            '<p class="aside thread-note">'
+            "Sample thread — preview only. Live staff replies ship after the odds engine lands."
+            "</p>"
+        )
+        for message in WAR_SAMPLE_THREAD:
+            urgent = " bubble-urgent" if message.get("urgent") else ""
+            parts.append(
+                f'<article class="bubble{urgent}">'
+                f'<p class="who">{h(message["who"])} <span class="sample-badge">Sample</span></p>'
+                f'<p>{h(message["body"])}</p></article>'
+            )
+        parts.append(
+            '<p class="aside war-preview-note">'
+            f"{h(WAR_PREVIEW)}"
+            "</p>"
         )
     else:
         if banner:
@@ -1308,7 +1451,15 @@ def page_war(user, messages, ready=True, banner=None):
             '<div class="row"><button class="primary" type="submit">Send</button></div>'
             "</form>"
         )
-    return layout("War Room", "\n".join(parts), user=user, war=True)
+    return layout("War Room", "\n".join(parts), user=user, war=True, active="war")
+
+
+def screener_html(user):
+    path = ROOT / "screener" / "index.html"
+    template = path.read_text(encoding="utf-8")
+    nav = shell_nav(user, active="screener")
+    html_doc = template.replace("__SHELL_NAV__", nav)
+    return html_doc
 
 
 def cookies_of(handler):
@@ -1395,8 +1546,14 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         user = current_user(self)
-        if path in ("/shell.css",) or path.startswith("/screener") or path.startswith("/design"):
-            self.serve_static(path if path != "/screener" else "/screener/")
+        if path.startswith("/design") or path in ("/shell.css",):
+            self.serve_static(path)
+            return
+        if path in ("/screener", "/screener/", "/screener/index.html"):
+            self.send_html(200, screener_html(user))
+            return
+        if path.startswith("/screener"):
+            self.serve_static(path)
             return
         if path == "/":
             if user:
