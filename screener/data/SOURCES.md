@@ -1,6 +1,6 @@
 # Screener sources
 
-NFL regular season, QB/RB/WR/TE only, one row per player per season. Seasons 2015 through 2025. Each season file is `screener/data/nfl/YEAR.json`, built from:
+NFL regular season, QB/RB/WR/TE only, one row per player per season. Seasons 2015 through the latest year that downloaded. Each season file is `screener/data/nfl/YEAR.json`, built from:
 
 - 2015: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_reg_2015.csv.gz (556 players)
 - 2016: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_reg_2016.csv.gz (557 players)
@@ -13,6 +13,7 @@ NFL regular season, QB/RB/WR/TE only, one row per player per season. Seasons 201
 - 2023: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_reg_2023.csv.gz (577 players)
 - 2024: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_reg_2024.csv.gz (589 players)
 - 2025: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_reg_2025.csv.gz (610 players)
+- 2026: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_reg_2026.csv.gz (454 players)
 
 Age is years old on September 1 of that season, from `birth_date` in the roster file joined on `gsis_id` = `player_id`. A player with no birth date has no age.
 
@@ -27,6 +28,7 @@ Age is years old on September 1 of that season, from `birth_date` in the roster 
 - 2023 roster: https://github.com/nflverse/nflverse-data/releases/download/rosters/roster_2023.csv
 - 2024 roster: https://github.com/nflverse/nflverse-data/releases/download/rosters/roster_2024.csv
 - 2025 roster: https://github.com/nflverse/nflverse-data/releases/download/rosters/roster_2025.csv
+- 2026 roster: https://github.com/nflverse/nflverse-data/releases/download/rosters/roster_2026.csv
 
 PPR is computed from counting stats: pass yards × 0.04, pass TD × 4, interception × −2, rush yards × 0.1, rush TD × 6, reception × 1, rec yards × 0.1, rec TD × 6, special-teams TD × 6, two-point conversion × 2, and offensive fumbles lost (sack + rush + receiving) × −2. A blank component counts as 0 only inside that formula. That matches nflverse `fantasy_points_ppr` on every skill-position row, season and week. PPG is PPR divided by games, and only when the file has a games value. TD is pass TD + rush TD + rec TD. Pos Rank is within position by PPR and is computed in the page.
 
@@ -43,6 +45,7 @@ Weekly view uses the same positions and the same formula, one row per player per
 - 2023: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2023.csv.gz — weeks present: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18. Disabled (inside 1 through the last present week, but with no skill-position rows): none.
 - 2024: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2024.csv.gz — weeks present: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18. Disabled (inside 1 through the last present week, but with no skill-position rows): none.
 - 2025: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2025.csv.gz — weeks present: 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18. Disabled (inside 1 through the last present week, but with no skill-position rows): none.
+- 2026: https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2026.csv.gz — weeks present: 1, 2, 3, 4. Disabled (inside 1 through the last present week, but with no skill-position rows): none.
 
 The week control lists every week from 1 through the last week that has rows. A missing week in that span is disabled. Weeks that the file does not contain past that span are not shown. No week numbers were invented.
 

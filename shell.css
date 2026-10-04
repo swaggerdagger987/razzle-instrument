@@ -79,6 +79,20 @@ nav.rooms {
   margin-left: auto;
 }
 
+.nav-preview {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-light);
+  border: 2px solid var(--ink-light);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
 nav.rooms a, button, .btn {
   font-family: var(--font-display);
   font-size: 16px;

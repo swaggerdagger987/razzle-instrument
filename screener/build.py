@@ -3,7 +3,8 @@
 
 No API key. Counting stats are copied. Derived fields are PPR, PPG, and
 total touchdowns. A category with no source value is omitted, not filled with 0.
-NFL seasons 2015-2025, regular season, plus the weekly file for each of those
+NFL seasons 2015 through the latest published nflverse year, regular season, plus
+the weekly file for each of those
 seasons. College seasons are every year whose passing, rushing, receiving, and
 roster files download.
 """
@@ -23,7 +24,7 @@ DATA = ROOT / "data"
 NFL_DIR = DATA / "nfl"
 COLLEGE_DIR = DATA / "college"
 
-NFL_YEARS = list(range(2015, 2026))
+NFL_YEARS = list(range(2015, 2027))
 COLLEGE_YEARS = list(range(2015, 2027))
 SKILL = ("QB", "RB", "WR", "TE")
 
@@ -120,6 +121,10 @@ def put(player, key, value):
     player[key] = value
 
 
+def norm_gsis(value):
+    return (value or "").strip()
+
+
 def write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -183,6 +188,7 @@ def season_player(row, births, year):
         "pos": row["position"],
         "ppr": points,
     }
+    put(player, "gsisId", norm_gsis(row.get("player_id")))
     put(player, "team", row.get("recent_team") or "")
     put(player, "gp", games)
     player.update(counting(row))
@@ -235,6 +241,7 @@ def week_player(rows, births, year):
         "pos": base["position"],
         "ppr": points,
     }
+    put(player, "gsisId", norm_gsis(base.get("player_id")))
     put(player, "team", base.get("team") or "")
     summed = {source: total[source] for _, source in COUNT_FIELDS if source in total}
     player.update(counting(summed))
@@ -250,8 +257,38 @@ def build_nfl_year(year):
     reg_url = NFL_REG.format(year=year)
     week_url = NFL_WEEK.format(year=year)
     roster_url = NFL_ROSTER.format(year=year)
-    reg = skill_rows(fetch(reg_url))
-    weeks_raw = skill_rows(fetch(week_url), season_type="REG")
+    reg_rows, reg_err = fetch_ok(reg_url)
+    if reg_rows is None:
+        return {
+            "year": year,
+            "players": 0,
+            "weeks": [],
+            "disabledWeeks": [],
+            "weekRows": {},
+            "regUrl": reg_url,
+            "weekUrl": NFL_WEEK.format(year=year),
+            "rosterUrl": roster_url,
+            "rosterError": reg_err,
+            "skipped": True,
+            "errors": {"reg": reg_err},
+        }
+    week_rows, week_err = fetch_ok(week_url)
+    if week_rows is None:
+        return {
+            "year": year,
+            "players": 0,
+            "weeks": [],
+            "disabledWeeks": [],
+            "weekRows": {},
+            "regUrl": reg_url,
+            "weekUrl": week_url,
+            "rosterUrl": roster_url,
+            "rosterError": None,
+            "skipped": True,
+            "errors": {"week": week_err},
+        }
+    reg = skill_rows(reg_rows)
+    weeks_raw = skill_rows(week_rows, season_type="REG")
     roster, roster_err = fetch_ok(roster_url)
     births = birth_map(roster) if roster is not None else {}
 
@@ -320,6 +357,8 @@ def build_nfl_year(year):
         "weekUrl": week_url,
         "rosterUrl": roster_url if roster is not None else None,
         "rosterError": roster_err,
+        "skipped": False,
+        "errors": {},
     }
 
 
@@ -347,7 +386,7 @@ def college_player(player_id, passing, rushing, receiving, roster):
     if not name:
         return None
 
-    player = {"name": name, "pos": pos}
+    player = {"name": name, "pos": pos, "cid": str(player_id)}
     put(player, "team", home.get("pos_team") or "")
     put(player, "conference", home.get("conference") or "")
     games = [whole(row.get("games")) for row in parts if "games" in row]
@@ -430,12 +469,15 @@ def write_sources(nfl, college):
     lines = ["# Screener sources", ""]
     lines.append(
         "NFL regular season, QB/RB/WR/TE only, one row per player per season. "
-        "Seasons 2015 through 2025. Each season file is "
+        "Seasons 2015 through the latest year that downloaded. Each season file is "
         "`screener/data/nfl/YEAR.json`, built from:"
     )
     lines.append("")
     for row in nfl:
-        lines.append(f"- {row['year']}: {row['regUrl']} ({row['players']} players)")
+        if row.get("skipped"):
+            lines.append(f"- {row['year']}: not built ({row.get('errors')})")
+        else:
+            lines.append(f"- {row['year']}: {row['regUrl']} ({row['players']} players)")
     lines.append("")
     lines.append(
         "Age is years old on September 1 of that season, from `birth_date` in the roster file "
@@ -443,6 +485,8 @@ def write_sources(nfl, college):
     )
     lines.append("")
     for row in nfl:
+        if row.get("skipped"):
+            continue
         if row["rosterUrl"]:
             lines.append(f"- {row['year']} roster: {row['rosterUrl']}")
         else:
@@ -466,6 +510,8 @@ def write_sources(nfl, college):
     )
     lines.append("")
     for row in nfl:
+        if row.get("skipped"):
+            continue
         weeks = ", ".join(str(week) for week in row["weeks"]) or "none"
         disabled = ", ".join(str(week) for week in row["disabledWeeks"]) or "none"
         lines.append(
@@ -547,23 +593,31 @@ def main():
             result = future.result()
             if kind == "nfl":
                 nfl.append(result)
-                print(f"nfl {year} players {result['players']} weeks {result['weeks']} disabled {result['disabledWeeks']}", flush=True)
+                if result.get("skipped"):
+                    print(f"nfl {year} skipped {result.get('errors')}", flush=True)
+                else:
+                    print(
+                        f"nfl {year} players {result['players']} weeks {result['weeks']} "
+                        f"disabled {result['disabledWeeks']}",
+                        flush=True,
+                    )
             else:
                 college.append(result)
                 print(f"college {year} players {result['players']} skipped {result['skipped']}", flush=True)
 
     nfl.sort(key=lambda row: row["year"])
     college.sort(key=lambda row: row["year"])
+    built_nfl = [row for row in nfl if not row.get("skipped")]
     catalog = {
         "nfl": {
-            "defaultSeason": nfl[-1]["year"],
+            "defaultSeason": built_nfl[-1]["year"] if built_nfl else 2025,
             "seasons": [
                 {
                     "year": row["year"],
                     "weeks": row["weeks"],
                     "disabledWeeks": row["disabledWeeks"],
                 }
-                for row in nfl
+                for row in built_nfl
             ],
         },
         "college": {
@@ -574,7 +628,7 @@ def main():
     write_json(DATA / "catalog.json", catalog)
     write_sources(nfl, college)
 
-    other = next(row for row in nfl if row["year"] == 2018)
+    other = next(row for row in built_nfl if row["year"] == 2018)
     week = other["weeks"][0]
     print(f"SANITY nfl {other['year']} season rows {other['players']}")
     print(f"SANITY nfl {other['year']} week {week} rows {other['weekRows'][str(week)]}")
