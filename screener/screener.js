@@ -271,8 +271,9 @@ function render() {
     const badge = document.createElement("span");
     badge.className = "pos " + (player.pos || "");
     badge.textContent = player.pos || "";
-    const name = document.createElement("span");
+    const name = document.createElement("a");
     name.className = "name";
+    name.href = "/player?name=" + encodeURIComponent(player.name);
     name.textContent = player.name;
     const sub = document.createElement("span");
     sub.className = "meta";
