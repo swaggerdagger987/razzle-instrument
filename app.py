@@ -96,6 +96,43 @@ def h(value):
     return html.escape("" if value is None else str(value), quote=True)
 
 
+def sample_badge():
+    return '<span class="badge sample">Sample</span>'
+
+
+_PLAYER_INDEX = None
+
+
+def player_index():
+    global _PLAYER_INDEX
+    if _PLAYER_INDEX is None:
+        pack = nfl_2025()
+        index = {}
+        for player in pack.get("players") or []:
+            name = str(player.get("name") or "").strip()
+            if name:
+                index[name.casefold()] = player
+        _PLAYER_INDEX = index
+    return _PLAYER_INDEX
+
+
+def pos_for_name(name):
+    if not name or name.startswith("id "):
+        return ""
+    player = player_index().get(str(name).strip().casefold())
+    if not player:
+        return ""
+    return str(player.get("pos") or "")
+
+
+def fmt_stat(value, digits=0):
+    if value is None or value == "":
+        return "—"
+    if isinstance(value, float):
+        return f"{value:.{digits}f}"
+    return str(value)
+
+
 def now():
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -685,7 +722,7 @@ def ask_model(question, context):
     return text[:4000], True
 
 
-def layout(title, body, *, user=None, war=False):
+def layout(title, body, *, user=None, war=False, page=""):
     nav = ""
     if user:
         nav = (
@@ -697,26 +734,32 @@ def layout(title, body, *, user=None, war=False):
             "</nav>"
         )
     logo_href = "/home" if user else "/"
-    klass = "war" if war else ""
+    body_class = " ".join(part for part in (page, "war" if war else "") if part)
+    head_title = h(title)
+    room_h1 = ""
+    if user:
+        room_h1 = f'<p class="screen-label">{h(title)}</p>'
+    else:
+        room_h1 = f"<h1>{head_title}</h1>"
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{h(title)}</title>
+<title>{head_title}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Luckiest+Guy&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/design/tokens.css">
 <link rel="stylesheet" href="/shell.css">
 </head>
-<body class="{klass}">
+<body class="{h(body_class)}">
 <header>
   <a class="logo" href="{logo_href}" aria-label="Razzle">
     <span class="logo-mark" aria-hidden="true">&#x1F42F;</span>
     <span class="logo-text">Razzle</span>
   </a>
-  <h1>{h(title)}</h1>
+  {room_h1}
   {nav}
 </header>
 <main>
@@ -756,125 +799,289 @@ def page_auth(error=None):
 </div>
 <p class="aside">The screener is open. <a href="/screener/">Go to the screener</a></p>
 """
-    return layout("Razzle", body, user=None)
+    return layout("Razzle", body, user=None, page="page-auth")
 
 
-def render_odds(snapshot):
-    shares = snapshot["shares"]
-    mine = snapshot["mine"]
+def render_odds_hero(snapshot, link):
+    shares = snapshot.get("shares")
+    mine = snapshot.get("mine") or []
+    league_name = ""
+    if link and link.get("league_name"):
+        league_name = str(link["league_name"])
+    bits = [
+        '<section class="home-hero card stripe-orange">',
+        '<p class="kicker">Championship share</p>',
+    ]
+    if league_name:
+        bits.append(f'<p class="league-pill">{h(league_name)}</p>')
     if not shares or not mine or any(rid not in shares for rid in mine):
-        number = f'<p class="hero quiet">{h(ODDS_MISSING)}</p>'
+        bits.append(f'<p class="hero-missing">{h(ODDS_MISSING)}</p>')
         if snapshot.get("teams") and not mine:
-            number += "<p>Your Sleeper user is not an owner on this league.</p>"
-        return number
-    if len(mine) == 1:
+            bits.append('<p class="hero-note">Your Sleeper user is not an owner on this league.</p>')
+    elif len(mine) == 1:
         pct = shares[mine[0]]
-        return f'<p class="hero">{pct:.1f}%</p>'
-    bits = [f"Roster {rid}: {shares[rid]:.1f}%" for rid in mine]
-    return f'<p class="hero quiet">{h(" · ".join(bits))}</p>' 
+        bits.append(f'<p class="hero-number" aria-label="Championship share">{pct:.1f}<span class="hero-unit">%</span></p>')
+        if snapshot.get("share_note"):
+            bits.append(f'<p class="hero-note">{h(snapshot["share_note"])}</p>')
+    else:
+        roster_bits = [f"Roster {rid}: {shares[rid]:.1f}%" for rid in mine]
+        bits.append(f'<p class="hero-number multi">{h(" · ".join(roster_bits))}</p>')
+        if snapshot.get("share_note"):
+            bits.append(f'<p class="hero-note">{h(snapshot["share_note"])}</p>')
+    bits.append("</section>")
+    return "".join(bits)
 
 
-def render_roster_list(label, names):
-    if not names:
+def render_roster_slot(name):
+    pos = pos_for_name(name)
+    pos_html = ""
+    if pos:
+        pos_html = f'<span class="pos {h(pos)}">{h(pos)}</span>'
+    if name.startswith("id "):
+        return f'<li class="roster-row">{pos_html}<span class="roster-id">{h(name)}</span></li>'
+    url = "/player?name=" + urllib.parse.quote(name)
+    stripe = f" stripe-{pos.lower()}" if pos else ""
+    return (
+        f'<li class="roster-row{stripe}">{pos_html}'
+        f'<a class="roster-name" href="{h(url)}">{h(name)}</a></li>'
+    )
+
+
+def render_roster_panel(team):
+    starters = team.get("starters") or []
+    bench = team.get("bench") or []
+    if not starters and not bench:
         return ""
-    items = []
-    for name in names:
-        if name.startswith("id "):
-            items.append(f"<li>{h(name)}</li>")
+    starter_html = "".join(render_roster_slot(name) for name in starters)
+    bench_html = "".join(render_roster_slot(name) for name in bench)
+    return (
+        '<section class="roster-board card">'
+        f'<p class="kicker">Your roster · {h(team["label"])}</p>'
+        '<div class="roster-groups">'
+        '<div class="roster-group starters">'
+        '<p class="group-label">Starters</p>'
+        f'<ul class="roster">{starter_html or "<li class=\"roster-empty\">No starters listed.</li>"}</ul>'
+        "</div>"
+        '<div class="roster-group bench">'
+        '<p class="group-label">Bench</p>'
+        f'<ul class="roster">{bench_html or "<li class=\"roster-empty\">Bench is empty.</li>"}</ul>'
+        "</div>"
+        "</div></section>"
+    )
+
+
+def render_standings(snapshot):
+    mine = set(snapshot.get("mine") or [])
+    teams = list(snapshot.get("teams") or [])
+    if not teams:
+        return ""
+    show_share = snapshot.get("shares") is not None
+    teams_by_pf = sorted(teams, key=lambda team: (-(team.get("pf") or 0), team.get("label") or ""))
+    rows = []
+    for rank, team in enumerate(teams_by_pf, start=1):
+        rec = team["record"] if team.get("record") is not None else "—"
+        pf = f"{team['pf']:.1f}" if team.get("pf") is not None else "—"
+        share = f"{team['share']:.1f}%" if team.get("share") is not None else "—"
+        mine_cls = " mine" if team.get("roster_id") in mine else ""
+        rank_cls = " rank-1" if rank == 1 else (" rank-2" if rank == 2 else (" rank-3" if rank == 3 else ""))
+        share_cell = f'<td class="num">{h(share)}</td>' if show_share else ""
+        rows.append(
+            f'<tr class="{mine_cls.strip()}{rank_cls}">'
+            f'<td class="rank">{rank}</td>'
+            f'<td class="team">{h(team.get("label") or "")}</td>'
+            f'<td class="num">{h(rec)}</td>'
+            f'<td class="num">{h(pf)}</td>'
+            f"{share_cell}</tr>"
+        )
+    head_share = '<th scope="col">Share</th>' if show_share else ""
+    return (
+        '<section class="standings-board card">'
+        '<p class="kicker">Standings</p>'
+        '<div class="standings-wrap">'
+        "<table class=\"standings\">"
+        "<thead><tr>"
+        '<th scope="col" class="rank">#</th>'
+        '<th scope="col">Team</th>'
+        '<th scope="col">Record</th>'
+        '<th scope="col">PF</th>'
+        f"{head_share}"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></div></section>"
+    )
+
+
+def player_stat_columns(pos):
+    common = [("gp", "GP", 0), ("ppr", "PPR", 1), ("ppg", "PPG", 1)]
+    if pos == "QB":
+        return common + [
+            ("py", "Pass Yds", 0),
+            ("ptd", "Pass TD", 0),
+            ("ry", "Rush Yds", 0),
+            ("rtd", "Rush TD", 0),
+        ]
+    if pos == "RB":
+        return common + [
+            ("ry", "Rush Yds", 0),
+            ("rtd", "Rush TD", 0),
+            ("rec", "REC", 0),
+            ("rey", "Rec Yds", 0),
+            ("tgt", "TGT", 0),
+        ]
+    if pos in ("WR", "TE"):
+        return common + [
+            ("rec", "REC", 0),
+            ("rey", "Rec Yds", 0),
+            ("retd", "Rec TD", 0),
+            ("tgt", "TGT", 0),
+        ]
+    return common + [("td", "TD", 0)]
+
+
+def sample_verdict(player):
+    pos = str(player.get("pos") or "")
+    name = str(player.get("name") or "He")
+    templates = {
+        "QB": f"{name} is the offense. The floor is real; the ceiling is weekly.",
+        "RB": f"Volume is the whole argument. Start {name} when the touches are there.",
+        "WR": f"{name} wins on targets. If the looks stay, the box score follows.",
+        "TE": f"Red zone and snap share — that's the bet on {name}.",
+    }
+    return templates.get(pos, f"{name} profiles as a weekly decision, not a season-long lock.")
+
+
+def sample_leverage(player):
+    pos = str(player.get("pos") or "")
+    ppg = player.get("ppg")
+    ppr = player.get("ppr")
+    if pos == "QB" and ppg is not None:
+        return f"Leverage: rushing floor plus {fmt_stat(ppg, 1)} PPG — weekly ceiling without the handcuff tax."
+    if pos == "RB" and ppr is not None:
+        return f"Leverage: {fmt_stat(ppr, 1)} PPR on the season — win the flex, steal the matchup."
+    if pos in ("WR", "TE") and player.get("tgt") is not None:
+        return f"Leverage: {fmt_stat(player.get('tgt'), 0)} targets — target share is the whole trade."
+    return "Leverage: usage-driven upside when the role holds."
+
+
+def war_preview_messages(link, snapshot):
+    messages = [
+        {
+            "staff": "Razzle",
+            "tone": "razzle",
+            "body": "Film room's open. This is a preview thread — staff voice, sample intel.",
+            "sample": True,
+            "urgent": False,
+        },
+        {
+            "staff": "Hawkeye",
+            "tone": "hawk",
+            "body": "Screener's loaded. I'm cross-checking usage before anyone gets cute in trade chat.",
+            "sample": True,
+            "urgent": False,
+        },
+    ]
+    if link and link.get("league_id") and snapshot:
+        mine = set(snapshot.get("mine") or [])
+        my_team = next((team for team in snapshot.get("teams") or [] if team.get("roster_id") in mine), None)
+        if my_team:
+            starters = [name for name in (my_team.get("starters") or []) if not str(name).startswith("id ")]
+            focus = starters[0] if starters else my_team.get("label")
+            messages.append({
+                "staff": "Razzle",
+                "tone": "razzle urgent",
+                "body": f"Heads up — {focus} is your pivot this week. Don't die on the wrong hill.",
+                "sample": True,
+                "urgent": True,
+            })
         else:
-            items.append(f'<li><a href="/player?name={urllib.parse.quote(name)}">{h(name)}</a></li>')
-    return f"<p class=\"kicker\">{h(label)}</p><ul class=\"roster\">{''.join(items)}</ul>"
+            messages.append({
+                "staff": "Razzle",
+                "tone": "razzle",
+                "body": "League's on file. I don't see your roster as an owner yet — fix that in Home setup.",
+                "sample": True,
+                "urgent": False,
+            })
+    else:
+        messages.append({
+            "staff": "Dr. Dolphin",
+            "tone": "dolphin",
+            "body": "Save a Sleeper league on Home and this thread picks up your roster context.",
+            "sample": True,
+            "urgent": False,
+        })
+    messages.append({
+        "staff": "Razzle",
+        "tone": "razzle",
+        "body": "Live replies ship later. For now, read the room and poke the screener.",
+        "sample": True,
+        "urgent": False,
+    })
+    return messages
 
 
 def page_home(user, link, choices, snapshot, error=None):
     err = f'<p class="error">{h(error)}</p>' if error else ""
-    saved = ""
+    league_saved = bool(link and link.get("league_id"))
+    setup_open = "" if league_saved else " open"
+    saved_line = ""
     if link and link.get("username"):
-        saved = f"<p>Sleeper user <strong>{h(link['username'])}</strong>"
+        saved_line = f'<p class="saved-line">Sleeper <strong>{h(link["username"])}</strong>'
         if link.get("league_name"):
-            saved += f" · saved league <strong>{h(link['league_name'])}</strong>"
-        saved += "</p>"
+            saved_line += f' · league <strong>{h(link["league_name"])}</strong>'
+        saved_line += "</p>"
     choice_html = ""
     if choices:
         items = []
         for choice in choices:
-            mark = " on" if link and link.get("league_id") == choice["league_id"] else ""
+            on = link and link.get("league_id") == choice["league_id"]
             items.append(
-                '<li class="' + h("on" if mark else "") + '"><span>' + h(choice["name"]) + "</span>"
+                '<li class="' + ("on" if on else "") + '"><span>' + h(choice["name"]) + "</span>"
                 '<form method="post" action="/sleeper/league">'
                 '<input type="hidden" name="league_id" value="' + h(choice["league_id"]) + '">'
                 "<button type=\"submit\">Save</button></form></li>"
             )
-        choice_html = (
-            '<section class="card"><p class="kicker">2025 leagues</p><ul class="league-list">'
-            + "".join(items)
-            + "</ul></section>"
-        )
-    roster_html = ""
-    if snapshot:
-        mine = set(snapshot["mine"])
-        my_teams = [team for team in snapshot["teams"] if team["roster_id"] in mine]
-        blocks = []
-        for team in my_teams:
-            blocks.append(
-                "<section class=\"card\">"
-                f"<p class=\"kicker\">{h(team['label'])}</p>"
-                + render_roster_list("Starters", team["starters"])
-                + render_roster_list("Bench", team["bench"])
-                + "</section>"
-            )
-        if link and link.get("league_id") and not my_teams:
-            blocks.append("<section class=\"card\"><p>No roster on this league is owned by that Sleeper user.</p></section>")
-        table_rows = []
-        show_share = snapshot["shares"] is not None
-        for team in snapshot["teams"]:
-            rec = team["record"] if team["record"] is not None else "—"
-            pf = f"{team['pf']:.1f}" if team["pf"] is not None else "—"
-            share = f"{team['share']:.1f}%" if team["share"] is not None else ""
-            cls = " class=\"mine\"" if team["roster_id"] in mine else ""
-            share_cell = f"<td>{h(share)}</td>" if show_share else ""
-            table_rows.append(
-                f"<tr{cls}><td>{h(team['label'])}</td><td>{h(rec)}</td><td>{h(pf)}</td>{share_cell}</tr>"
-            )
-        head_share = "<th>Odds</th>" if show_share else ""
-        table = (
-            "<table><thead><tr><th>Team</th><th>Record</th><th>Points</th>"
-            + head_share
-            + "</tr></thead><tbody>"
-            + "".join(table_rows)
-            + "</tbody></table>"
-        )
-        note = ""
-        if snapshot.get("share_note"):
-            note = f'<p class="aside">{h(snapshot["share_note"])}</p>'
-        roster_html = (
-            '<section class="card"><p class="kicker">Championship odds</p>'
-            + render_odds(snapshot)
-            + note
-            + "</section>"
-            + "".join(blocks)
-            + '<section class="card"><p class="kicker">League</p>'
-            + table
-            + note
-            + "</section>"
-        )
-    elif link and link.get("league_id"):
-        roster_html = (
-            '<section class="card"><p class="kicker">Championship odds</p>'
-            f'<p class="hero quiet">{h(ODDS_MISSING)}</p></section>'
-        )
+        choice_html = '<ul class="league-list">' + "".join(items) + "</ul>"
     form = """
-<section class="card">
-  <p class="kicker">Sleeper</p>
-  <form method="post" action="/sleeper/lookup">
-    <label for="username">Sleeper username</label>
-    <input id="username" name="username" autocomplete="off" required>
-    <div class="row"><button class="primary" type="submit">Pull 2025 leagues</button></div>
-  </form>
-</section>
+<form method="post" action="/sleeper/lookup">
+  <label for="username">Sleeper username</label>
+  <input id="username" name="username" autocomplete="off" required>
+  <div class="row"><button class="primary" type="submit">Pull 2025 leagues</button></div>
+</form>
 """
-    body = "\n".join([err, saved, form, choice_html, roster_html])
-    return layout("Home", body, user=user)
+    setup = (
+        f'<details class="setup-panel card"{setup_open}>'
+        '<summary class="setup-summary">League setup</summary>'
+        '<div class="setup-body">'
+        + saved_line
+        + form
+        + choice_html
+        + "</div></details>"
+    )
+    league_html = ""
+    if snapshot:
+        mine = set(snapshot.get("mine") or [])
+        my_teams = [team for team in snapshot["teams"] if team["roster_id"] in mine]
+        roster_blocks = "".join(render_roster_panel(team) for team in my_teams)
+        if link and link.get("league_id") and not my_teams:
+            roster_blocks = (
+                '<section class="roster-board card"><p class="hero-note">'
+                "No roster on this league is owned by that Sleeper user.</p></section>"
+            )
+        league_html = render_odds_hero(snapshot, link) + render_standings(snapshot) + roster_blocks
+    elif link and link.get("league_id"):
+        league_html = (
+            '<section class="home-hero card stripe-orange">'
+            '<p class="kicker">Championship share</p>'
+            f'<p class="hero-missing">{h(ODDS_MISSING)}</p></section>'
+        )
+    body = "\n".join([
+        err,
+        '<div class="home-layout">',
+        league_html or '<section class="home-empty card"><p class="hero-note">Pull a Sleeper league to see your board.</p></section>',
+        setup,
+        "</div>",
+    ])
+    return layout("Home", body, user=user, page="page-home")
 
 
 def page_player(name, user=None):
@@ -883,76 +1090,119 @@ def page_player(name, user=None):
     season = pack.get("season")
     found = find_players(name) if name else []
     if not name:
-        inner = "<p>Open a player from the screener.</p>"
+        inner = '<section class="tearsheet card"><p class="hero-note">Open a player from the screener.</p></section>'
     elif not found:
-        inner = f"<p>{h(name)} is not in the {h(season)} NFL screener file.</p>"
+        inner = (
+            f'<section class="tearsheet card"><p class="hero-note">'
+            f"{h(name)} is not in the {h(season)} NFL screener file.</p></section>"
+        )
     else:
         cards = []
-        fields = [
-            ("pos", "Pos"),
-            ("team", "Team"),
-            ("age", "Age"),
-            ("gp", "GP"),
-            ("ppr", "PPR"),
-            ("ppg", "PPG"),
-            ("py", "Pass Yds"),
-            ("ptd", "Pass TD"),
-            ("ry", "Rush Yds"),
-            ("rtd", "Rush TD"),
-            ("rec", "REC"),
-            ("rey", "Rec Yds"),
-            ("retd", "Rec TD"),
-            ("tgt", "TGT"),
-            ("td", "TD"),
-        ]
         for player in found:
-            pos = player.get("pos") or ""
-            rows = []
-            for key, label in fields:
+            pos = str(player.get("pos") or "")
+            stripe = f" stripe-{pos.lower()}" if pos else ""
+            stat_cols = player_stat_columns(pos)
+            stat_cells = []
+            for key, label, digits in stat_cols:
                 if key not in player or player[key] is None or player[key] == "":
                     continue
-                value = player[key]
-                if isinstance(value, float):
-                    shown = f"{value:.1f}"
-                else:
-                    shown = str(value)
-                if key == "pos":
-                    shown_html = f'<span class="pos {h(pos)}">{h(shown)}</span>'
-                else:
-                    shown_html = h(shown)
-                rows.append(f"<tr><th>{h(label)}</th><td>{shown_html}</td></tr>")
+                stat_cells.append(
+                    '<div class="stat-cell">'
+                    f'<span class="stat-label">{h(label)}</span>'
+                    f'<span class="stat-value">{h(fmt_stat(player[key], digits))}</span>'
+                    "</div>"
+                )
+            team = player.get("team")
+            meta_bits = [bit for bit in [pos, team, fmt_stat(player.get("age"), 0) if player.get("age") else ""] if bit]
+            source_link = ""
+            if source.startswith("http"):
+                source_link = (
+                    f'<a class="source-link" href="{h(source)}" rel="noopener noreferrer">'
+                    "nflverse player stats (CSV)</a>"
+                )
+            else:
+                source_link = h(source or "screener file")
             cards.append(
-                "<section class=\"card\">"
-                f"<p class=\"player-name\">{h(player.get('name'))}</p>"
-                f"<table>{''.join(rows)}</table>"
-                "<p><strong>Leverage is not the full model yet.</strong></p>"
-                f"<p class=\"aside\">{h(season)} NFL regular season. Source: {h(source)}</p>"
-                "</section>"
+                f'<article class="tearsheet card{stripe}">'
+                '<header class="tear-head">'
+                f'<h2 class="tear-name">{h(player.get("name"))}</h2>'
+                f'<p class="tear-meta">{h(" · ".join(str(bit) for bit in meta_bits))}</p>'
+                "</header>"
+                '<p class="tear-verdict">'
+                + sample_badge()
+                + " "
+                + h(sample_verdict(player))
+                + "</p>"
+                '<p class="tear-leverage">'
+                + sample_badge()
+                + " "
+                + h(sample_leverage(player))
+                + "</p>"
+                '<div class="stat-grid" role="list">'
+                + "".join(stat_cells)
+                + "</div>"
+                f'<p class="tear-source"><span class="source-label">Source</span> {source_link}'
+                f" · {h(season)} NFL regular season</p>"
+                "</article>"
             )
         inner = "".join(cards)
-    body = inner + '<p><a href="/screener/">Back to the screener</a></p>'
-    return layout("Player", body, user=user)
+    body = inner + '<p class="back-link"><a href="/screener/">← Screener</a></p>'
+    return layout("Player", body, user=user, page="page-player")
 
 
-def page_war(user, messages, banner=None):
-    parts = []
-    if banner:
-        parts.append(f'<p class="banner">{h(banner)}</p>')
-    if not messages:
-        parts.append('<p class="aside">Your league is the context. Ask about your roster.</p>')
-    for message in messages:
-        who = "You" if message["role"] == "you" else "War Room"
-        parts.append(
-            f'<article class="bubble"><p class="who">{who}</p><p>{h(message["body"])}</p></article>'
-        )
-    parts.append(
-        '<form method="post" action="/war-room">'
-        '<label for="question">Ask the room</label>'
-        '<input id="question" name="question" maxlength="2000" required>'
-        '<div class="row"><button class="primary" type="submit">Send</button></div>'
-        "</form>"
+def render_war_bubble(message):
+    staff = message.get("staff") or "Staff"
+    tone = message.get("tone") or "staff"
+    urgent = message.get("urgent")
+    sample = message.get("sample")
+    badges = []
+    if sample:
+        badges.append(sample_badge())
+    if urgent:
+        badges.append('<span class="badge urgent">Urgent</span>')
+    badge_html = (" ".join(badges) + " ") if badges else ""
+    return (
+        f'<article class="war-msg {h(tone)}{" urgent" if urgent else ""}">'
+        f'<p class="war-who">{h(staff)}</p>'
+        f'<p class="war-text">{badge_html}{h(message.get("body") or "")}</p>'
+        "</article>"
     )
-    return layout("War Room", "\n".join(parts), user=user, war=True)
+
+
+def page_war(user, preview, live_messages=None):
+    parts = [
+        '<div class="war-phone">',
+        '<div class="war-phone-notch" aria-hidden="true"></div>',
+        '<div class="war-phone-header">',
+        '<p class="war-phone-title">War Room</p>',
+        '<p class="war-phone-sub">Staff thread · preview</p>',
+        "</div>",
+        '<div class="war-thread" role="log" aria-live="polite">',
+    ]
+    for message in preview:
+        parts.append(render_war_bubble(message))
+    for message in live_messages or []:
+        if message.get("role") == "you":
+            parts.append(
+                '<article class="war-msg you"><p class="war-who">You</p>'
+                f'<p class="war-text">{h(message.get("body") or "")}</p></article>'
+            )
+        elif message.get("body") and message.get("body") != KEY_MISSING:
+            parts.append(
+                '<article class="war-msg room"><p class="war-who">War Room</p>'
+                f'<p class="war-text">{h(message.get("body") or "")}</p></article>'
+            )
+    parts.extend([
+        "</div>",
+        '<p class="war-compose-note">'
+        + sample_badge()
+        + " Live send ships later. Your league context is already wired on Home.</p>",
+        '<div class="war-compose-faux" aria-hidden="true">'
+        '<span class="war-compose-placeholder">Message the staff…</span>'
+        "</div>",
+        "</div>",
+    ])
+    return layout("War Room", "\n".join(parts), user=user, war=True, page="page-war")
 
 
 def cookies_of(handler):
@@ -1256,11 +1506,21 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchall()
         return list(reversed([dict(row) for row in rows]))
 
-    def war_html(self, user, banner=None):
-        key = (os.environ.get("RAZZLE_MODEL_KEY") or "").strip()
-        if not key and not banner:
-            banner = KEY_MISSING
-        return page_war(user, self.war_messages(user["id"]), banner=banner)
+    def war_html(self, user):
+        link = get_link(user["id"])
+        snapshot = None
+        if link and link.get("league_id"):
+            try:
+                snapshot = build_snapshot(link)
+            except (SleeperError, OSError, ValueError, TypeError, KeyError):
+                snapshot = None
+        preview = war_preview_messages(link, snapshot)
+        live = [
+            message
+            for message in self.war_messages(user["id"])
+            if message.get("body") != KEY_MISSING
+        ]
+        return page_war(user, preview, live_messages=live)
 
     def post_war(self, user, form):
         question = (form.get("question") or "").strip()
@@ -1275,10 +1535,6 @@ class Handler(BaseHTTPRequestHandler):
                     "INSERT INTO war_messages (user_id, role, body, created_at) VALUES (?, ?, ?, ?)",
                     (user["id"], "you", question, now()),
                 )
-                conn.execute(
-                    "INSERT INTO war_messages (user_id, role, body, created_at) VALUES (?, ?, ?, ?)",
-                    (user["id"], "room", KEY_MISSING, now()),
-                )
             self.redirect("/war-room")
             return
         link = get_link(user["id"])
@@ -1291,7 +1547,7 @@ class Handler(BaseHTTPRequestHandler):
             except SleeperError:
                 self.send_html(
                     200,
-                    self.war_html(user, banner="The league did not load, so the room did not answer."),
+                    self.war_html(user),
                 )
                 return
             reply, ok = ask_model(question, context_from(snapshot, link))
