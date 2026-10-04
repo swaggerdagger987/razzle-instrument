@@ -22,7 +22,7 @@ DATA = ROOT / "data"
 DB_PATH = DATA / "razzle.db"
 HOST = "0.0.0.0"
 PORT = 8080
-LEAGUE_SEASON = 2025
+LEAGUE_SEASON_FALLBACK = 2026
 PBKDF2_ROUNDS = 200_000
 STATIC_EXT = {".html", ".css", ".js", ".json", ".md", ".txt"}
 CONTENT_TYPES = {
@@ -106,7 +106,7 @@ _PLAYER_INDEX = None
 def player_index():
     global _PLAYER_INDEX
     if _PLAYER_INDEX is None:
-        pack = nfl_2025()
+        pack = nfl_screener_pack()
         index = {}
         for player in pack.get("players") or []:
             name = str(player.get("name") or "").strip()
@@ -257,10 +257,35 @@ def load_player_names():
         return names
 
 
-def nfl_2025():
+def league_season():
+    """NFL fantasy season from Sleeper /state/nfl."""
+    state = _safe_state()
+    if isinstance(state, dict):
+        for key in ("season", "league_season", "league_create_season"):
+            raw = state.get(key)
+            if raw is None:
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+    return LEAGUE_SEASON_FALLBACK
+
+
+def nfl_screener_pack():
     global _NFL
     if _NFL is None:
-        path = ROOT / "screener" / "data" / "nfl" / "2025.json"
+        nfl_dir = ROOT / "screener" / "data" / "nfl"
+        season = league_season()
+        path = nfl_dir / f"{season}.json"
+        if not path.is_file():
+            years = sorted(
+                int(item.stem)
+                for item in nfl_dir.glob("*.json")
+                if item.stem.isdigit()
+            )
+            if years:
+                path = nfl_dir / f"{years[-1]}.json"
         with path.open(encoding="utf-8") as handle:
             _NFL = json.load(handle)
     return _NFL
@@ -270,7 +295,7 @@ def find_players(name):
     want = (name or "").strip().casefold()
     if not want:
         return []
-    pack = nfl_2025()
+    pack = nfl_screener_pack()
     found = []
     for player in pack.get("players") or []:
         if str(player.get("name") or "").strip().casefold() == want:
@@ -327,7 +352,7 @@ def weeks_expected(league, state):
         return []
     if str(league.get("status") or "") == "complete":
         return weeks
-    done = complete_through(state, LEAGUE_SEASON, weeks[-1])
+    done = complete_through(state, league_season(), weeks[-1])
     if done is None:
         return []
     return [week for week in weeks if week <= done]
@@ -662,7 +687,7 @@ def _safe_state():
 def context_from(snapshot, link):
     league = snapshot["league"]
     name = str(league.get("name") or "").strip() or "unnamed"
-    lines = [f"League: {name} (id {link['league_id']}), season {LEAGUE_SEASON}"]
+    lines = [f"League: {name} (id {link['league_id']}), season {league_season()}"]
     if snapshot["mine"]:
         lines.append("Your roster ids: " + ", ".join(str(rid) for rid in snapshot["mine"]))
     else:
@@ -988,7 +1013,7 @@ def war_preview_messages(link, snapshot):
             focus = starters[0] if starters else my_team.get("label")
             messages.append({
                 "staff": "Razzle",
-                "tone": "razzle urgent",
+                "tone": "razzle",
                 "body": f"Heads up — {focus} is your pivot this week. Don't die on the wrong hill.",
                 "sample": True,
                 "urgent": True,
@@ -1041,11 +1066,12 @@ def page_home(user, link, choices, snapshot, error=None):
                 "<button type=\"submit\">Save</button></form></li>"
             )
         choice_html = '<ul class="league-list">' + "".join(items) + "</ul>"
-    form = """
+    season = league_season()
+    form = f"""
 <form method="post" action="/sleeper/lookup">
   <label for="username">Sleeper username</label>
   <input id="username" name="username" autocomplete="off" required>
-  <div class="row"><button class="primary" type="submit">Pull 2025 leagues</button></div>
+  <div class="row"><button class="primary" type="submit">Pull {h(str(season))} leagues</button></div>
 </form>
 """
     setup = (
@@ -1085,7 +1111,7 @@ def page_home(user, link, choices, snapshot, error=None):
 
 
 def page_player(name, user=None):
-    pack = nfl_2025()
+    pack = nfl_screener_pack()
     source = pack.get("source") or ""
     season = pack.get("season")
     found = find_players(name) if name else []
@@ -1161,8 +1187,9 @@ def render_war_bubble(message):
     if urgent:
         badges.append('<span class="badge urgent">Urgent</span>')
     badge_html = (" ".join(badges) + " ") if badges else ""
+    tone_class = " ".join(h(part) for part in str(tone).split())
     return (
-        f'<article class="war-msg {h(tone)}{" urgent" if urgent else ""}">'
+        f'<article class="war-msg {tone_class}{" urgent" if urgent else ""}">'
         f'<p class="war-who">{h(staff)}</p>'
         f'<p class="war-text">{badge_html}{h(message.get("body") or "")}</p>'
         "</article>"
@@ -1408,7 +1435,9 @@ class Handler(BaseHTTPRequestHandler):
                 raise SleeperError(404)
             sleeper_user_id = str(payload["user_id"])
             canonical = clean_username(payload.get("username") or username) or username
-            leagues = sleeper_json(f"/user/{urllib.parse.quote(sleeper_user_id)}/leagues/nfl/{LEAGUE_SEASON}")
+            leagues = sleeper_json(
+                f"/user/{urllib.parse.quote(sleeper_user_id)}/leagues/nfl/{league_season()}"
+            )
             if not isinstance(leagues, list):
                 raise SleeperError(0)
         except SleeperError as exc:
@@ -1453,7 +1482,13 @@ class Handler(BaseHTTPRequestHandler):
                 [(user["id"], league_id, name) for league_id, name in choices],
             )
         if not choices:
-            self.send_html(200, self.home_html(user, error="No 2025 NFL leagues on that Sleeper user."))
+            self.send_html(
+                200,
+                self.home_html(
+                    user,
+                    error=f"No {league_season()} NFL leagues on that Sleeper user.",
+                ),
+            )
             return
         self.redirect("/home")
 
