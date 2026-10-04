@@ -1219,13 +1219,20 @@ def page_war(user, preview, live_messages=None):
                 '<article class="war-msg room"><p class="war-who">War Room</p>'
                 f'<p class="war-text">{h(message.get("body") or "")}</p></article>'
             )
+    parts.append(
+        '<article class="war-msg system compose-hint">'
+        '<p class="war-who">Preview</p>'
+        '<p class="war-text">'
+        + sample_badge()
+        + " Live send ships later. Your league context is already wired on Home.</p>"
+        "</article>"
+    )
     parts.extend([
         "</div>",
-        '<p class="war-compose-note">'
-        + sample_badge()
-        + " Live send ships later. Your league context is already wired on Home.</p>",
+        '<div class="war-compose-bar">',
         '<div class="war-compose-faux" aria-hidden="true">'
         '<span class="war-compose-placeholder">Message the staff…</span>'
+        "</div>",
         "</div>",
         "</div>",
     ])
