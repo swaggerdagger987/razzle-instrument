@@ -204,12 +204,16 @@ function render() {
     tr.appendChild(rank);
     const who = document.createElement("td");
     who.className = "ident player";
+    const badge = document.createElement("span");
+    badge.className = "pos " + (player.pos || "");
+    badge.textContent = player.pos || "";
     const name = document.createElement("span");
     name.className = "name";
     name.textContent = player.name;
     const sub = document.createElement("span");
     sub.className = "meta";
     sub.textContent = meta(player);
+    who.appendChild(badge);
     who.appendChild(name);
     who.appendChild(sub);
     tr.appendChild(who);
@@ -228,6 +232,7 @@ function setUniverse(next) {
   state.pos = "ALL";
   state.sortKey = next === "nfl" ? "ppr" : "ty";
   state.sortDir = "desc";
+  document.body.classList.toggle("college", next === "college");
   document.getElementById("tab-nfl").setAttribute("aria-selected", next === "nfl" ? "true" : "false");
   document.getElementById("tab-college").setAttribute("aria-selected", next === "college" ? "true" : "false");
   for (const chip of document.querySelectorAll(".chip")) {
