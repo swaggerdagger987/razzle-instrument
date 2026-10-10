@@ -2262,8 +2262,27 @@ def resolve_static(path):
     return None
 
 
+def ensure_engine_data():
+    """Committed JSON ships with the repo; rebuild if missing (e.g. partial checkout)."""
+    engine_dir = ROOT / "screener" / "data" / "engine"
+    screener = engine_dir / "screener.json"
+    details = engine_dir / "player-details.json"
+    if screener.is_file() and details.is_file():
+        return
+    print("Engine JSON missing — rebuilding snapshot (first run may take ~10s)…", flush=True)
+    try:
+        from razzle.engine.snapshot import build_snapshot
+
+        build_snapshot(engine_dir, legacy_case3=False)
+        print(f"Wrote {screener} and {details}", flush=True)
+    except Exception as exc:
+        print(f"Could not build engine snapshot: {exc}", flush=True)
+        print("Player tear sheets need screener/data/engine/*.json from git or handoff.", flush=True)
+
+
 def main():
     DATA.mkdir(parents=True, exist_ok=True)
+    ensure_engine_data()
     with DB():
         pass
     server = ThreadingHTTPServer((HOST, PORT), Handler)

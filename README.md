@@ -10,7 +10,7 @@ The spec in `spec/` is the source of truth. This shell includes the valuation en
 
 - Code: `razzle/engine/` — see `razzle/engine/DEVIATIONS.md` for intentional workbook fixes.
 - Parity tests: `python3 -m unittest discover -s tests -v` (fixtures in `tests/fixtures/engine_dump.tar.gz`).
-- Rebuild UI snapshot: `python3 -m razzle.engine.snapshot` → `screener/data/engine/screener.json`.
+- Optional rebuild: `python3 -m razzle.engine.snapshot` → `screener/data/engine/*.json`.
 
 ## Run
 
@@ -23,6 +23,8 @@ python3 app.py
 Then open http://127.0.0.1:8080
 
 The screener is at http://127.0.0.1:8080/screener/ . It does not need an account.
+
+Player tear sheets use committed `screener/data/engine/screener.json`, `player-details.json`, and `screener/data/nfl/player-meta.json`. After `git pull`, restart `python3 app.py` only — no build step. If engine JSON is missing, startup rebuilds it automatically (~10s).
 
 Register with an email and a password (8 or more characters). Passwords are stored as a salted hash. The session is a cookie. The database is `data/razzle.db`, created on first run, and it is gitignored.
 
