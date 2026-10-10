@@ -1,0 +1,264 @@
+/* Player equity tear sheet */
+
+body.page-player main {
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.tear-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.ticker-strip {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 20px 24px;
+  border: 3px solid var(--ink);
+  box-shadow: var(--shadow-chunky);
+}
+
+.ticker-strip.stripe-qb { border-top: 6px solid var(--blue); }
+.ticker-strip.stripe-rb { border-top: 6px solid var(--green); }
+.ticker-strip.stripe-wr { border-top: 6px solid var(--orange); }
+.ticker-strip.stripe-te { border-top: 6px solid var(--purple); }
+
+.ticker-name {
+  font-family: var(--font-display);
+  font-size: 28px;
+  line-height: 1.05;
+  margin: 0;
+}
+
+.ticker-meta {
+  margin: 6px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.ticker-team {
+  font-weight: 700;
+}
+
+.ticker-bio {
+  margin: 8px 0 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  color: var(--ink-medium);
+}
+
+.ticker-bio.faint {
+  color: var(--ink-light);
+  font-size: 12px;
+}
+
+.ticker-quote {
+  text-align: right;
+  min-width: 220px;
+}
+
+.ticker-price {
+  font-family: var(--font-display);
+  font-size: 56px;
+  line-height: 1;
+  margin: 0;
+}
+
+.ticker-price.missing {
+  color: var(--ink-light);
+}
+
+.ticker-unit {
+  font-size: 0.45em;
+  margin-left: 4px;
+}
+
+.ticker-price-label {
+  margin: 4px 0 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--ink-light);
+}
+
+.ticker-keys {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(90px, 1fr));
+  gap: 8px 16px;
+}
+
+.ticker-key .label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--ink-light);
+}
+
+.ticker-key .value {
+  font-family: var(--font-mono);
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.tear-grid {
+  display: grid;
+  grid-template-columns: 1.2fr 0.9fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .tear-grid {
+    grid-template-columns: 1fr;
+  }
+  .ticker-quote {
+    text-align: left;
+  }
+}
+
+.sheet-section {
+  margin: 0;
+}
+
+.sheet-section .kicker {
+  margin-bottom: 8px;
+}
+
+.sheet-note,
+.sheet-empty {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--ink-medium);
+  margin: 0 0 10px;
+}
+
+.sheet-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.sheet-table th {
+  text-align: left;
+  font-weight: 700;
+  color: var(--ink-light);
+  padding: 6px 8px 6px 0;
+  border-bottom: 2px dashed var(--ink-faint);
+}
+
+.sheet-table td {
+  padding: 6px 8px 6px 0;
+  border-bottom: 1px dashed var(--ink-faint);
+}
+
+.sheet-table td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.sheet-table.compact {
+  font-size: 12px;
+}
+
+.pct-rank {
+  font-size: 11px;
+  color: var(--ink-light);
+  margin-left: 6px;
+}
+
+.chart-wrap {
+  position: relative;
+  background: var(--bg-card);
+  border: 2px dashed var(--ink-faint);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  margin-bottom: 12px;
+}
+
+.tear-chart {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.chart-line-actual {
+  stroke: var(--ink);
+  stroke-width: 3;
+  stroke-linecap: round;
+}
+
+.chart-line-proj {
+  stroke: var(--orange);
+  stroke-width: 2;
+  stroke-dasharray: 6 4;
+}
+
+.chart-dot-actual {
+  fill: var(--bg-card);
+  stroke: var(--ink);
+  stroke-width: 2;
+}
+
+.chart-band {
+  fill: var(--orange);
+}
+
+.chart-tick {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  fill: var(--ink-medium);
+}
+
+.chart-annotation {
+  font-family: var(--font-hand);
+  font-size: 14px;
+  fill: var(--ink-light);
+}
+
+.chart-bar {
+  fill: var(--orange);
+  stroke: var(--ink);
+  stroke-width: 2;
+  opacity: 0.85;
+}
+
+.chart-watermark {
+  font-family: var(--font-hand);
+  font-size: 12px;
+  color: var(--ink-light);
+  text-align: right;
+  margin: 4px 4px 0;
+}
+
+.comp-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+.comp-list li {
+  padding: 6px 0;
+  border-bottom: 1px dashed var(--ink-faint);
+}
+
+.comp-list .meta {
+  color: var(--ink-light);
+  font-size: 12px;
+}
+
+.tear-leverage {
+  font-family: var(--font-mono);
+  font-size: 13px;
+}

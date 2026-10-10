@@ -24,6 +24,7 @@ HOST = "0.0.0.0"
 PORT = 8080
 PBKDF2_ROUNDS = 200_000
 STATIC_EXT = {".html", ".css", ".js", ".json", ".md", ".txt"}
+PLAYER_CSS = ROOT / "player.css"
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -403,6 +404,8 @@ def load_sleeper_index():
                         "position": str(rec.get("position") or ""),
                         "team": str(rec.get("team") or ""),
                         "gsis_id": normalize_gsis(rec.get("gsis_id")),
+                        "injury_status": str(rec.get("injury_status") or ""),
+                        "status": str(rec.get("status") or ""),
                     }
         _SLEEPER = index
         return index
@@ -905,7 +908,7 @@ def shell_nav(user, active=None):
     )
 
 
-def layout(title, body, *, user=None, war=False, active=None, tagline=None, page=""):
+def layout(title, body, *, user=None, war=False, active=None, tagline=None, page="", extra_head=""):
     logo_href = "/home" if user else "/"
     body_class = " ".join(part for part in (page, "war" if war else "") if part)
     tagline_html = f'<p class="page-kicker">{h(tagline)}</p>' if tagline else ""
@@ -914,6 +917,7 @@ def layout(title, body, *, user=None, war=False, active=None, tagline=None, page
         room_heading = f'<p class="screen-label">{h(title)}</p>'
     else:
         room_heading = f"<h1>{h(title)}</h1>"
+    extra_css = extra_head
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -925,6 +929,7 @@ def layout(title, body, *, user=None, war=False, active=None, tagline=None, page
 <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600&family=Luckiest+Guy&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/design/tokens.css">
 <link rel="stylesheet" href="/shell.css">
+{extra_css}
 </head>
 <body class="{h(body_class)}">
 <header>
@@ -1450,13 +1455,83 @@ def missing_nfl_season_message(want):
     )
 
 
+def _engine_summary_for_gsis(gsis: str):
+    row = engine_players_index().get(gsis)
+    if not row:
+        return None
+    full = engine_players_index()
+    return {**row, "__full_index__": full}
+
+
+def _week_pack_loader(year):
+    def loader(y):
+        if y != year:
+            return None
+        path = ROOT / "screener" / "data" / "nfl" / f"{y}-weeks.json"
+        if not path.is_file():
+            return None
+        return json.loads(path.read_text(encoding="utf-8"))
+    return loader
+
+
+def _render_skill_tear_sheet(
+    player,
+    season,
+    source,
+    *,
+    sleeper_id="",
+    sleeper_rec=None,
+    league_snapshot=None,
+):
+    from razzle.player_sheet import build_nfl_skill_context, render_tear_sheet
+
+    gsis = player.get("gsisId") or ""
+    try:
+        sidx = load_sleeper_index()
+    except SleeperError:
+        sidx = None
+    ctx = build_nfl_skill_context(
+        gsis=gsis,
+        season=season,
+        name=player.get("name") or "",
+        pos=player.get("pos") or "",
+        team=player.get("team") or "",
+        season_player=player,
+        source=source,
+        engine_summary=_engine_summary_for_gsis(gsis) if gsis else None,
+        sleeper_id=sleeper_id,
+        sleeper_rec=sleeper_rec,
+        league_snapshot=league_snapshot,
+        sleeper_index=sidx,
+        load_pack=load_nfl_pack,
+        catalog_years=nfl_catalog_years(),
+        week_pack_loader=_week_pack_loader(season),
+    )
+    return render_tear_sheet(ctx, h, sample_badge())
+
+
 def page_player(query, user=None):
+    from razzle.player_sheet import (
+        build_nfl_skill_context,
+        render_college_tear,
+        render_sparse_card,
+        render_tear_sheet,
+    )
+
     sleeper_id = (query.get("sleeper") or "").strip()
     cid = (query.get("cid") or "").strip()
     season_q = (query.get("season") or "").strip()
     legacy_name = (query.get("name") or "").strip()
     stats_season, stats_on_disk = nfl_stats_season()
     inner = ""
+    league_snapshot = None
+    if user:
+        link = get_link(user["id"])
+        if link and link.get("league_id"):
+            try:
+                league_snapshot = build_snapshot(link)
+            except (SleeperError, OSError, ValueError, TypeError, KeyError):
+                league_snapshot = None
 
     if sleeper_id:
         try:
@@ -1471,23 +1546,19 @@ def page_player(query, user=None):
             pos = rec.get("position") or ""
             team = rec.get("team") or ""
             header_bits = [bit for bit in (pos, team) if bit]
-            if pos == "DEF":
-                inner = render_empty_card(
+            if pos in ("DEF", "K"):
+                inner = render_sparse_card(
                     title,
                     [
-                        " · ".join(header_bits) if header_bits else "Team defense",
+                        " · ".join(header_bits) if header_bits else ("Team defense" if pos == "DEF" else "Kicker"),
                         "The NFL screener only includes QB, RB, WR, and TE counting stats from nflverse. "
-                        "Team defense scoring is not in that source.",
+                        + (
+                            "Team defense scoring is not in that source."
+                            if pos == "DEF"
+                            else "Kicker scoring is not in that source."
+                        ),
                     ],
-                )
-            elif pos == "K":
-                inner = render_empty_card(
-                    title,
-                    [
-                        " · ".join(header_bits) if header_bits else "Kicker",
-                        "The NFL screener only includes QB, RB, WR, and TE counting stats from nflverse. "
-                        "Kicker scoring is not in that source.",
-                    ],
+                    h,
                 )
             elif pos in NFL_SKILL:
                 if not stats_on_disk:
@@ -1498,7 +1569,14 @@ def page_player(query, user=None):
                     source = (pack or {}).get("source") or ""
                     player = nfl_by_gsis(stats_season).get(gsis) if gsis else None
                     if player:
-                        inner = render_nfl_stat_card(player, stats_season, source)
+                        inner = _render_skill_tear_sheet(
+                            player,
+                            stats_season,
+                            source,
+                            sleeper_id=sleeper_id,
+                            sleeper_rec=rec,
+                            league_snapshot=league_snapshot,
+                        )
                     elif not gsis:
                         inner = render_empty_card(
                             title,
@@ -1540,15 +1618,31 @@ def page_player(query, user=None):
             source = (pack or {}).get("source") or ""
             player = nfl_by_gsis(year).get(gsis)
             if player:
-                inner = render_nfl_stat_card(player, year, source)
-            else:
-                inner = render_empty_card(
-                    gsis,
-                    [
-                        f"No published {year} regular-season skill stats for nflverse id {gsis}.",
-                        "Blank where the source has no row — nothing invented here.",
-                    ],
+                inner = _render_skill_tear_sheet(
+                    player,
+                    year,
+                    source,
+                    league_snapshot=league_snapshot,
                 )
+            else:
+                meta = load_engine_snapshot()
+                eng = (meta.get("players") or {}).get(gsis)
+                if eng:
+                    stub = {
+                        "gsisId": gsis,
+                        "name": eng.get("name") or gsis,
+                        "pos": eng.get("pos") or "",
+                        "team": eng.get("team") or "",
+                    }
+                    inner = _render_skill_tear_sheet(stub, year, source, league_snapshot=league_snapshot)
+                else:
+                    inner = render_empty_card(
+                        gsis,
+                        [
+                            f"No published {year} regular-season skill stats for nflverse id {gsis}.",
+                            "Blank where the source has no row — nothing invented here.",
+                        ],
+                    )
     elif cid:
         try:
             year = int(season_q) if season_q else int(load_catalog().get("college", {}).get("defaultSeason") or 0)
@@ -1565,7 +1659,19 @@ def page_player(query, user=None):
             pack = load_college_pack(year)
             player = find_college_player(year, cid)
             if player:
-                inner = render_college_stat_card(player, year, (pack or {}).get("source"))
+                from razzle.player_data import PlayerSheetContext
+                from razzle.player_sheet import render_college_tear
+
+                ctx = PlayerSheetContext(
+                    kind="college",
+                    name=player.get("name") or "College player",
+                    pos=player.get("pos") or "",
+                    team=player.get("team") or "",
+                    season=year,
+                    season_stats=player,
+                    source_url=((pack or {}).get("source") or [""])[0] if isinstance((pack or {}).get("source"), list) else (pack or {}).get("source") or "",
+                )
+                inner = render_college_tear(ctx, h, sample_badge())
             else:
                 inner = render_empty_card(
                     "College player",
@@ -1589,12 +1695,22 @@ def page_player(query, user=None):
                 )
             else:
                 source = (pack or {}).get("source") or ""
-                inner = "".join(render_nfl_stat_card(player, stats_season, source) for player in found)
+                inner = "".join(
+                    _render_skill_tear_sheet(player, stats_season, source, league_snapshot=league_snapshot)
+                    for player in found
+                )
     else:
         inner = "<p>Open a player from the screener or your roster.</p>"
 
     body = inner + '<p class="back-link"><a href="/screener/">← Screener</a></p>'
-    return layout("Player", body, user=user, active="player", page="page-player")
+    return layout(
+        "Player",
+        body,
+        user=user,
+        active="player",
+        page="page-player",
+        extra_head='<link rel="stylesheet" href="/player.css">',
+    )
 
 
 def war_preview_messages(link, snapshot):
@@ -1809,7 +1925,7 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         user = current_user(self)
-        if path.startswith("/design") or path in ("/shell.css",):
+        if path.startswith("/design") or path in ("/shell.css", "/player.css"):
             self.serve_static(path)
             return
         if path in ("/screener", "/screener/", "/screener/index.html"):
@@ -2123,6 +2239,9 @@ class Handler(BaseHTTPRequestHandler):
 def resolve_static(path):
     if path == "/shell.css":
         candidate = (ROOT / "shell.css").resolve()
+        return candidate if candidate.is_file() else None
+    if path == "/player.css":
+        candidate = (ROOT / "player.css").resolve()
         return candidate if candidate.is_file() else None
     roots = (("/screener", ROOT / "screener"), ("/design", ROOT / "design"))
     for prefix, folder in roots:

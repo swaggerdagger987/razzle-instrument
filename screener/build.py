@@ -125,6 +125,46 @@ def norm_gsis(value):
     return (value or "").strip()
 
 
+def build_player_meta(year):
+    """Roster bio keyed by gsis id (latest season roster file)."""
+    roster_url = NFL_ROSTER.format(year=year)
+    roster, err = fetch_ok(roster_url)
+    if roster is None:
+        return {"year": year, "skipped": True, "error": err}
+    players = {}
+    for row in roster:
+        gsis = norm_gsis(row.get("gsis_id"))
+        if not gsis:
+            continue
+        entry = {"gsisId": gsis, "name": row.get("full_name") or ""}
+        put(entry, "pos", row.get("position") or "")
+        put(entry, "team", row.get("team") or "")
+        if row.get("height") not in (None, ""):
+            try:
+                inches = int(float(row["height"]))
+                entry["heightIn"] = inches
+                entry["height"] = f"{inches // 12}'{inches % 12}\""
+            except (TypeError, ValueError):
+                put(entry, "height", row.get("height"))
+        put(entry, "weight", whole(row.get("weight")))
+        put(entry, "college", row.get("college") or "")
+        put(entry, "yearsExp", whole(row.get("years_exp")))
+        put(entry, "rookieYear", whole(row.get("rookie_year") or row.get("entry_year")))
+        draft_num = whole(row.get("draft_number"))
+        if draft_num is not None:
+            entry["draftPick"] = draft_num
+            rnd = whole(row.get("draft_round"))
+            if rnd is not None:
+                entry["draftRound"] = rnd
+        players[gsis] = entry
+    out = NFL_DIR / "player-meta.json"
+    write_json(
+        out,
+        {"season": year, "source": roster_url, "players": players},
+    )
+    return {"year": year, "players": len(players), "skipped": False}
+
+
 def write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -717,6 +757,11 @@ def main():
         print(f"engine support {eng}", flush=True)
     except SystemExit as exc:
         print(f"engine support skipped: {exc}", flush=True)
+    try:
+        meta = build_player_meta(engine_year)
+        print(f"player meta {meta}", flush=True)
+    except SystemExit as exc:
+        print(f"player meta skipped: {exc}", flush=True)
     try:
         from razzle.engine.snapshot import build_snapshot
 
