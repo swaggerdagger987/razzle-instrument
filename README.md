@@ -4,7 +4,13 @@ An instrument for obsessive fantasy players.
 
 Tagline: quantify your gut.
 
-The spec in `spec/` is the source of truth. This shell is the first cut: sign-in, the screener, a player sheet, a saved Sleeper league, and the War Room. Leverage is not the full model yet. Championship odds appear only when they are computed from Sleeper. There are no payments.
+The spec in `spec/` is the source of truth. This shell includes the valuation engine (workbook v0 math), screener engine columns, player-sheet projections, and a four-team championship-odds sandbox on Home with σ knobs. Sleeper league payloads still power standings and the thin championship-share read. Leverage copy on the player sheet remains sample text. There are no payments.
+
+### Valuation engine
+
+- Code: `razzle/engine/` — see `razzle/engine/DEVIATIONS.md` for intentional workbook fixes.
+- Parity tests: `python3 -m unittest discover -s tests -v` (fixtures in `tests/fixtures/engine_dump.tar.gz`).
+- Rebuild UI snapshot: `python3 -m razzle.engine.snapshot` → `screener/data/engine/screener.json`.
 
 ## Run
 
@@ -20,9 +26,9 @@ The screener is at http://127.0.0.1:8080/screener/ . It does not need an account
 
 Register with an email and a password (8 or more characters). Passwords are stored as a salted hash. The session is a cookie. The database is `data/razzle.db`, created on first run, and it is gitignored.
 
-On Home, save a Sleeper username. Leagues are the 2025 NFL season from Sleeper. Pick one. The roster and any record or points on the page come from that league's Sleeper payload. If a championship number cannot be computed from those payloads, the page says odds are not computed yet.
+On Home, the hero number is sandbox title odds from the engine (not league Monte Carlo yet). Use the formula builder to nudge team σ and gut calls. Save a Sleeper username for standings and roster context.
 
-A player sheet (`/player?name=`) reads `screener/data/nfl/2025.json` only. It does not fill in stats that are not in that file.
+Player sheets join nflverse screener stats with engine projections when a row exists in `screener/data/engine/screener.json`.
 
 ## War Room
 

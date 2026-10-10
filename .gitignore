@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 /data/
+razzle-val/
+tests/fixtures/dump/
+*.xlsx

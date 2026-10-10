@@ -136,13 +136,19 @@ def write_json(path, payload):
 COUNT_FIELDS = (
     ("py", "passing_yards"),
     ("ptd", "passing_tds"),
+    ("att", "attempts"),
+    ("int", "passing_interceptions"),
     ("ry", "rushing_yards"),
     ("rtd", "rushing_tds"),
+    ("car", "carries"),
     ("rec", "receptions"),
     ("rey", "receiving_yards"),
     ("retd", "receiving_tds"),
     ("tgt", "targets"),
 )
+
+NFL_TEAM_WEEK = "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_{year}.csv.gz"
+NFL_GAMES = "https://github.com/nflverse/nfldata/raw/master/data/games.csv"
 
 
 def counting(row):
@@ -243,6 +249,12 @@ def week_player(rows, births, year):
     }
     put(player, "gsisId", norm_gsis(base.get("player_id")))
     put(player, "team", base.get("team") or "")
+    put(player, "opp", base.get("opponent_team") or "")
+    if base.get("game_id") not in (None, ""):
+        put(player, "gameId", str(base.get("game_id")))
+    home = base.get("home_away")
+    if home in ("home", "away"):
+        put(player, "home", home)
     summed = {source: total[source] for _, source in COUNT_FIELDS if source in total}
     player.update(counting(summed))
     born = births.get(base.get("player_id") or "")
@@ -575,6 +587,78 @@ def write_sources(nfl, college):
     (DATA / "SOURCES.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def build_engine_support(year):
+    """Team-week totals and remaining schedule for the valuation engine."""
+    out_dir = NFL_DIR / "engine"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    team_url = NFL_TEAM_WEEK.format(year=year)
+    team_rows, team_err = fetch_ok(team_url)
+    games_rows, games_err = fetch_ok(NFL_GAMES)
+    if team_rows is None or games_rows is None:
+        return {"year": year, "skipped": True, "errors": {"team": team_err, "games": games_err}}
+    team_week = []
+    for row in team_rows:
+        if (row.get("season_type") or "") != "REG":
+            continue
+        try:
+            week = int(row.get("week"))
+            season = int(row.get("season"))
+        except (TypeError, ValueError):
+            continue
+        if season != year:
+            continue
+        team_week.append(
+            {
+                "team": row.get("team") or "",
+                "week": week,
+                "passAtt": whole(row.get("passing_attempts")),
+                "sacks": whole(row.get("sacks_suffered")),
+                "carries": whole(row.get("rushing_attempts")),
+                "targets": whole(row.get("targets")),
+                "pf": whole(row.get("points_for")),
+                "pa": whole(row.get("points_against")),
+            }
+        )
+    schedule = []
+    for row in games_rows:
+        try:
+            season = int(row.get("season"))
+            week = int(row.get("week"))
+        except (TypeError, ValueError):
+            continue
+        if season != year or week < 4 or week > 17:
+            continue
+        if (row.get("game_type") or "REG") != "REG":
+            continue
+        gid = row.get("game_id") or ""
+        for side, team_col, opp_col, ha in (
+            ("home", "home_team", "away_team", 1),
+            ("away", "away_team", "home_team", -1),
+        ):
+            team = row.get(team_col) or ""
+            opp = row.get(opp_col) or ""
+            if not team:
+                continue
+            schedule.append(
+                {
+                    "team": team,
+                    "week": week,
+                    "opponent": opp,
+                    "homeSign": ha,
+                    "gameId": str(gid),
+                }
+            )
+    write_json(
+        out_dir / f"{year}-team-week.json",
+        {"season": year, "source": team_url, "rows": team_week},
+    )
+    write_json(
+        out_dir / f"{year}-schedule.json",
+        {"season": year, "source": NFL_GAMES, "rows": schedule},
+    )
+    return {"year": year, "skipped": False, "teamWeekRows": len(team_week), "scheduleRows": len(schedule)}
+
+
 def main():
     NFL_DIR.mkdir(parents=True, exist_ok=True)
     COLLEGE_DIR.mkdir(parents=True, exist_ok=True)
@@ -627,6 +711,19 @@ def main():
     }
     write_json(DATA / "catalog.json", catalog)
     write_sources(nfl, college)
+    engine_year = catalog["nfl"]["defaultSeason"]
+    try:
+        eng = build_engine_support(engine_year)
+        print(f"engine support {eng}", flush=True)
+    except SystemExit as exc:
+        print(f"engine support skipped: {exc}", flush=True)
+    try:
+        from razzle.engine.snapshot import build_snapshot
+
+        build_snapshot(ROOT / "data" / "engine", legacy_case3=False)
+        print("engine screener snapshot rebuilt", flush=True)
+    except Exception as exc:
+        print(f"engine snapshot not rebuilt: {exc}", flush=True)
 
     other = next(row for row in built_nfl if row["year"] == 2018)
     week = other["weeks"][0]

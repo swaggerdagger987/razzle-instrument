@@ -1,5 +1,12 @@
 /* Screener. Season files live under screener/data/nfl and screener/data/college. */
 
+const ENGINE_COLS = [
+  { key: "engProj", label: "Proj", digits: 1 },
+  { key: "engSd", label: "SD", digits: 1 },
+  { key: "engRos", label: "ROS", digits: 1 },
+  { key: "engTitlePp", label: "Title Δpp", digits: 1 },
+];
+
 const NFL_COLS = [
   { key: "posRank", label: "Pos Rank" },
   { key: "ppr", label: "PPR", digits: 1 },
@@ -42,6 +49,7 @@ const cache = {
   nfl: new Map(),
   weeks: new Map(),
   college: new Map(),
+  engine: null,
 };
 
 let catalog = null;
@@ -58,7 +66,26 @@ const weekSelect = document.getElementById("week-select");
 const weekControl = document.getElementById("week-control");
 
 function cols() {
-  return state.universe === "nfl" ? NFL_COLS : COLLEGE_COLS;
+  if (state.universe !== "nfl") return COLLEGE_COLS;
+  if (state.season === 2026 && cache.engine) return ENGINE_COLS.concat(NFL_COLS);
+  return NFL_COLS;
+}
+
+function mergeEngine(players) {
+  const eng = cache.engine;
+  if (!eng || !eng.players) return players;
+  const map = eng.players;
+  return players.map((player) => {
+    const row = map[player.gsisId];
+    if (!row) return player;
+    return {
+      ...player,
+      engProj: row.proj,
+      engSd: row.sd,
+      engRos: row.ros,
+      engTitlePp: row.titleOddsPp,
+    };
+  });
 }
 
 function missing(value) {
@@ -358,6 +385,9 @@ async function refresh() {
       data = { season: pack.season, players: pack.players.slice() };
     }
     if (id !== loadId) return;
+    if (universe === "nfl" && season === 2026 && cache.engine) {
+      data.players = mergeEngine(data.players);
+    }
     view = data;
   } catch (err) {
     if (id !== loadId) return;
@@ -423,14 +453,23 @@ weekSelect.addEventListener("change", () => {
   refresh();
 });
 
-load("data/catalog.json").then((data) => {
-  catalog = data;
-  state.season = data.nfl.defaultSeason;
-  state.week = "";
-  fillSeason();
-  fillWeeks();
-  refresh();
-}).catch(() => {
+load("data/catalog.json")
+  .then((data) => {
+    catalog = data;
+    state.season = data.nfl.defaultSeason;
+    state.week = "";
+    fillSeason();
+    fillWeeks();
+    return load("data/engine/screener.json")
+      .then((eng) => {
+        cache.engine = eng;
+      })
+      .catch(() => {
+        cache.engine = null;
+      });
+  })
+  .then(() => refresh())
+  .catch(() => {
   view = { error: "The season list did not load. Expected data/catalog.json.", players: [] };
   render();
 });

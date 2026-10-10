@@ -50,6 +50,10 @@ SAMPLE_LEVERAGE = (
     "but the trade market still sleeps on this usage curve."
 )
 ODDS_MISSING = "Championship odds are not computed yet."
+ENGINE_NOTE = (
+    "Four-team playoff sandbox from the valuation engine (fixed bracket assumptions). "
+    "Not your Sleeper league bracket yet."
+)
 NFL_SKILL = frozenset({"QB", "RB", "WR", "TE"})
 MODEL_URL_DEFAULT = "https://api.openai.com/v1/chat/completions"
 MODEL_NAME_DEFAULT = "gpt-4o-mini"
@@ -103,6 +107,8 @@ _CATALOG = None
 _NFL_PACKS = {}
 _NFL_GSIS = {}
 _COLLEGE_PACKS = {}
+_ENGINE_SNAPSHOT = None
+_ENGINE_LOCK = threading.Lock()
 
 
 class SleeperError(Exception):
@@ -229,6 +235,39 @@ def sleeper_json(path, timeout=20):
 
 def normalize_gsis(value):
     return (value or "").strip()
+
+
+def load_engine_snapshot():
+    global _ENGINE_SNAPSHOT
+    with _ENGINE_LOCK:
+        if _ENGINE_SNAPSHOT is not None:
+            return _ENGINE_SNAPSHOT
+        path = ROOT / "screener" / "data" / "engine" / "screener.json"
+        if not path.is_file():
+            _ENGINE_SNAPSHOT = {}
+            return _ENGINE_SNAPSHOT
+        try:
+            _ENGINE_SNAPSHOT = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            _ENGINE_SNAPSHOT = {}
+        return _ENGINE_SNAPSHOT
+
+
+def engine_players_index():
+    snap = load_engine_snapshot()
+    return (snap.get("players") or {}) if isinstance(snap, dict) else {}
+
+
+def run_engine_for_form(form):
+    try:
+        from razzle.engine.service import config_from_form, run_with_config
+    except ImportError:
+        return None
+    try:
+        config = config_from_form(form or {})
+        return run_with_config(config)
+    except (ValueError, TypeError, KeyError):
+        return None
 
 
 def load_catalog():
@@ -943,35 +982,103 @@ def page_auth(error=None):
     )
 
 
-def render_odds_hero(snapshot, link):
-    shares = snapshot.get("shares")
-    mine = snapshot.get("mine") or []
-    league_name = ""
-    if link and link.get("league_name"):
-        league_name = str(link["league_name"])
+def render_engine_odds_hero(engine_result, thesis_form=None):
+    """Four-team sandbox title odds (valuation engine)."""
     bits = [
         '<section class="home-hero card stripe-orange">',
-        '<p class="kicker">Championship share</p>',
+        '<p class="kicker">Championship odds (sandbox)</p>',
     ]
+    if engine_result is None or not engine_result.simulation:
+        bits.append(f'<p class="hero-missing">{h(ODDS_MISSING)}</p>')
+        bits.append("</section>")
+        return "".join(bits)
+    sim = engine_result.simulation
+    pct = 100.0 * sim.thesis_wins / sim.draws
+    bits.append(
+        f'<p class="hero-number" aria-label="Sandbox title odds">{pct:.1f}'
+        '<span class="hero-unit">%</span></p>'
+    )
+    bits.append(f'<p class="hero-note">{h(ENGINE_NOTE)}</p>')
+    contrib = sim.contribution_pp
+    bits.append(
+        f'<p class="hero-note">Title-odds edge vs replacement at the playoff slot: '
+        f'<strong>{h(f"{contrib:+.1f}")}</strong> pp (paired SE {sim.paired_se_pp:.2f} pp).</p>'
+    )
+    shares = sim.title_shares
+    bits.append(
+        '<p class="hero-note">Sim shares — You '
+        f'{shares.get("you", 0)}/{sim.draws}, A {shares.get("A", 0)}, '
+        f'B {shares.get("B", 0)}, C {shares.get("C", 0)}.</p>'
+    )
+    bits.append(render_odds_builder(thesis_form or {}))
+    bits.append("</section>")
+    return "".join(bits)
+
+
+def render_odds_builder(form):
+    team = h(form.get("team") or "HOU")
+    off = h(form.get("off_z") or "")
+    deff = h(form.get("def_z") or "2")
+    lean = h(form.get("pass_z") or "")
+    gut_team = h(form.get("gut_team") or "")
+    gut_week = h(form.get("gut_week") or "5")
+    gut_factor = h(form.get("gut_factor") or "Defense")
+    gut_strength = h(form.get("gut_strength") or "Very good")
+    draws = h(form.get("draws") or "10000")
+    return f"""
+<section class="odds-builder card">
+  <p class="kicker">Formula builder (σ knobs)</p>
+  <form method="post" action="/engine/thesis" class="odds-form">
+    <div class="odds-grid">
+      <label>Team <input name="team" value="{team}" maxlength="3" autocomplete="off"></label>
+      <label>Off σ <input name="off_z" value="{off}" inputmode="decimal" autocomplete="off"></label>
+      <label>Def σ <input name="def_z" value="{deff}" inputmode="decimal" autocomplete="off"></label>
+      <label>Pass-lean σ <input name="pass_z" value="{lean}" inputmode="decimal" autocomplete="off"></label>
+      <label>Draws <input name="draws" value="{draws}" inputmode="numeric" autocomplete="off"></label>
+    </div>
+    <p class="group-label">Gut call</p>
+    <div class="odds-grid">
+      <label>Team <input name="gut_team" value="{gut_team}" maxlength="3" autocomplete="off"></label>
+      <label>Week <input name="gut_week" value="{gut_week}" autocomplete="off" placeholder="4-17 or All"></label>
+      <label>Factor
+        <select name="gut_factor">
+          <option{" selected" if gut_factor == "Offense" else ""}>Offense</option>
+          <option{" selected" if gut_factor == "Defense" else ""}>Defense</option>
+          <option{" selected" if gut_factor == "Pass lean" else ""}>Pass lean</option>
+        </select>
+      </label>
+      <label>Strength
+        <select name="gut_strength">
+          {''.join(f'<option{" selected" if gut_strength == label else ""}>{h(label)}</option>' for label in (
+            "Very bad", "Bad", "Slightly worse", "Neutral", "Good", "Very good"
+          ))}
+        </select>
+      </label>
+    </div>
+    <div class="row"><button class="primary" type="submit">Recompute odds</button></div>
+  </form>
+</section>
+"""
+
+
+def render_sleeper_share(snapshot, link):
+    shares = snapshot.get("shares")
+    mine = snapshot.get("mine") or []
+    if not shares or not mine:
+        return ""
+    league_name = str(link.get("league_name") or "") if link else ""
+    bits = ['<section class="card stripe-muted">', '<p class="kicker">Sleeper thin read</p>']
     if league_name:
         bits.append(f'<p class="league-pill">{h(league_name)}</p>')
-    if not shares or not mine or any(rid not in shares for rid in mine):
-        bits.append(f'<p class="hero-missing">{h(ODDS_MISSING)}</p>')
-        if snapshot.get("teams") and not mine:
-            bits.append('<p class="hero-note">Your Sleeper user is not an owner on this league.</p>')
-    elif len(mine) == 1:
-        pct = shares[mine[0]]
-        bits.append(
-            f'<p class="hero-number" aria-label="Championship share">{pct:.1f}'
-            '<span class="hero-unit">%</span></p>'
-        )
-        if snapshot.get("share_note"):
-            bits.append(f'<p class="hero-note">{h(snapshot["share_note"])}</p>')
+    if any(rid not in shares for rid in mine):
+        return ""
+    if len(mine) == 1:
+        bits.append(f'<p class="hero-note">Your roster: <strong>{shares[mine[0]]:.1f}%</strong> championship share (not simulated).</p>')
     else:
         roster_bits = [f"Roster {rid}: {shares[rid]:.1f}%" for rid in mine]
-        bits.append(f'<p class="hero-number multi">{h(" · ".join(roster_bits))}</p>')
-        if snapshot.get("share_note"):
-            bits.append(f'<p class="hero-note">{h(snapshot["share_note"])}</p>')
+        bits.append(f'<p class="hero-note">{h(" · ".join(roster_bits))}</p>')
+    if snapshot.get("share_note"):
+        bits.append(f'<p class="hero-note">{h(snapshot["share_note"])}</p>')
     bits.append("</section>")
     return "".join(bits)
 
@@ -1073,7 +1180,7 @@ def roster_entries(pids, names):
     return lines
 
 
-def page_home(user, link, choices, snapshot, error=None):
+def page_home(user, link, choices, snapshot, error=None, engine_result=None, thesis_form=None):
     err = f'<p class="error">{h(error)}</p>' if error else ""
     league_saved = bool(link and link.get("league_id"))
     setup_open = "" if league_saved else " open"
@@ -1122,13 +1229,16 @@ def page_home(user, link, choices, snapshot, error=None):
                 '<section class="roster-board card"><p class="hero-note">'
                 "No roster on this league is owned by that Sleeper user.</p></section>"
             )
-        league_html = render_odds_hero(snapshot, link) + render_standings(snapshot) + roster_blocks
-    elif link and link.get("league_id"):
         league_html = (
-            '<section class="home-hero card stripe-orange">'
-            '<p class="kicker">Championship share</p>'
-            f'<p class="hero-missing">{h(ODDS_MISSING)}</p></section>'
+            render_engine_odds_hero(engine_result, thesis_form)
+            + render_sleeper_share(snapshot, link)
+            + render_standings(snapshot)
+            + roster_blocks
         )
+    else:
+        league_html = render_engine_odds_hero(engine_result, thesis_form)
+    if link and link.get("league_id") and snapshot is None and not league_html:
+        league_html = render_engine_odds_hero(engine_result, thesis_form)
     body = "\n".join([
         err,
         '<div class="home-layout">',
@@ -1256,6 +1366,33 @@ def render_stat_grid(player, pos):
     return '<div class="stat-grid">' + "".join(cells) + "</div>"
 
 
+def render_engine_tear_block(gsis, season):
+    row = engine_players_index().get(gsis)
+    if not row:
+        return (
+            '<p class="tear-verdict">Valuation engine has no row for this player yet. '
+            f'{sample_badge()}</p>'
+        )
+    wk = load_engine_snapshot().get("meta", {}).get("projectionWeek", 4)
+    lines = [
+        '<div class="stat-grid engine-grid">',
+        f'<div class="stat-cell"><span class="label">Proj W{wk}</span>'
+        f'<span class="value">{h(f"{row["proj"]:.1f}")}</span></div>',
+        f'<div class="stat-cell"><span class="label">Weekly SD</span>'
+        f'<span class="value">{h(f"{row["sd"]:.1f}")}</span></div>',
+        f'<div class="stat-cell"><span class="label">ROS value</span>'
+        f'<span class="value">{h(f"{row["ros"]:.1f}")}</span></div>',
+        f'<div class="stat-cell"><span class="label">Title odds Δ</span>'
+        f'<span class="value">{h(f"{row["titleOddsPp"]:+.1f}")} pp</span></div>',
+        "</div>",
+        f'<p class="tear-verdict">Engine projection (PPR, week {wk}): '
+        f'<strong>{row["proj"]:.1f}</strong> pts, σ {row["sd"]:.1f}. '
+        f'Rest-of-season weighted value <strong>{row["ros"]:.1f}</strong>. '
+        f'Title-odds impact vs replacement <strong>{row["titleOddsPp"]:+.1f} pp</strong>.</p>',
+    ]
+    return "".join(lines)
+
+
 def render_nfl_stat_card(player, season, source):
     pos = player.get("pos") or "WR"
     team = player.get("team") or ""
@@ -1263,6 +1400,8 @@ def render_nfl_stat_card(player, season, source):
     meta_bits = [bit for bit in (team, f"Age {age}" if age is not None else "") if bit]
     verdict = SAMPLE_VERDICT.get(pos, SAMPLE_VERDICT["WR"])
     stripe = f" card-pos-{pos}" if pos in POS_NFL_STATS else ""
+    gsis = player.get("gsisId") or ""
+    engine_html = render_engine_tear_block(gsis, season) if gsis else ""
     return (
         f'<section class="card card-stripe{stripe}">'
         '<div class="tear-head">'
@@ -1270,8 +1409,8 @@ def render_nfl_stat_card(player, season, source):
         f'<span class="pos {h(pos)}">{h(pos)}</span>'
         f'<span class="tear-meta">{h(" · ".join(meta_bits))}</span>'
         "</div>"
-        f'<p class="tear-verdict">{h(verdict)} <span class="sample-badge">Sample</span></p>'
-        f'<p class="tear-leverage">{h(SAMPLE_LEVERAGE)} <span class="sample-badge">Sample</span></p>'
+        + engine_html
+        + f'<p class="tear-leverage">{h(SAMPLE_LEVERAGE)} <span class="sample-badge">Sample</span></p>'
         + render_stat_grid(player, pos)
         + labeled_source_for_season(f"{season} NFL regular season", source)
         + "</section>"
@@ -1737,7 +1876,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/war-room":
             self.post_war(user, form)
             return
+        if path == "/engine/thesis":
+            self.post_engine_thesis(user, form)
+            return
         self.send_html(404, layout("Missing", "<p>That page is not here.</p>", user=user))
+
+    def post_engine_thesis(self, user, form):
+        self.send_html(200, self.home_html(user, thesis_form=form))
 
     def post_register(self, form):
         email = clean_email(form.get("email"))
@@ -1874,7 +2019,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         self.redirect("/home")
 
-    def home_html(self, user, error=None):
+    def home_html(self, user, error=None, thesis_form=None):
         link = get_link(user["id"])
         choices = get_choices(user["id"])
         snapshot = None
@@ -1885,7 +2030,17 @@ class Handler(BaseHTTPRequestHandler):
                 error = "Sleeper did not return this league. " + ODDS_MISSING
             except (OSError, ValueError, TypeError, KeyError):
                 error = "Sleeper did not return this league. " + ODDS_MISSING
-        return page_home(user, link, choices, snapshot, error=error)
+        default_form = thesis_form or {"team": "HOU", "def_z": "2", "draws": "10000"}
+        engine_result = run_engine_for_form(default_form)
+        return page_home(
+            user,
+            link,
+            choices,
+            snapshot,
+            error=error,
+            engine_result=engine_result,
+            thesis_form=default_form,
+        )
 
     def war_messages(self, user_id):
         with DB() as conn:
