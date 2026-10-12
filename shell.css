@@ -511,6 +511,18 @@ ul.roster li { padding: 3px 0; }
 }
 
 .card.stripe-orange { border-top: 6px solid var(--orange); }
+.card.stripe-muted { border-top: 4px solid var(--ink-faint); }
+
+.odds-builder { margin-top: 16px; }
+.odds-form .odds-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px 12px;
+  margin-bottom: 12px;
+}
+.odds-form label { font-size: 12px; font-weight: 700; display: flex; flex-direction: column; gap: 4px; }
+.odds-form input, .odds-form select { font: inherit; padding: 6px 8px; border: 2px solid var(--ink-faint); border-radius: var(--radius-sm); }
+.engine-grid { margin: 12px 0; }
 .tearsheet.stripe-qb,
 .roster-row.stripe-qb { border-left: 4px solid var(--pos-qb); }
 .tearsheet.stripe-rb,
